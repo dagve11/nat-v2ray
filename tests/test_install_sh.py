@@ -46,6 +46,9 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("2) VLESS Reality", script)
         self.assertIn("3) VLESS WS TLS", script)
         self.assertIn("4) Trojan TLS", script)
+        self.assertIn("5) VMess TCP", script)
+        self.assertIn("6) VMess WS", script)
+        self.assertIn("7) Shadowsocks", script)
         self.assertIn("TXT", script)
 
     def test_reality_supports_xray_config_and_share_uri(self) -> None:
@@ -74,6 +77,36 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("render_trojan_tls_config()", script)
         self.assertIn("build_vless_ws_tls_uri()", script)
         self.assertIn("build_trojan_tls_uri()", script)
+
+    def test_vmess_protocols_render_xray_configs_and_links(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("render_vmess_tcp_config()", script)
+        self.assertIn("render_vmess_ws_config()", script)
+        self.assertIn('"protocol": "vmess"', script)
+        self.assertIn('"network": "ws"', script)
+        self.assertIn("build_vmess_link()", script)
+        self.assertIn("base64_no_wrap", script)
+        self.assertIn('\\"net\\":\\"tcp\\"', script)
+        self.assertIn('\\"net\\":\\"ws\\"', script)
+
+    def test_shadowsocks_renders_xray_config_and_ss_uri(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("render_shadowsocks_config()", script)
+        self.assertIn('"protocol": "shadowsocks"', script)
+        self.assertIn('"method": "${method}"', script)
+        self.assertIn('"password": "${password}"', script)
+        self.assertIn("build_shadowsocks_uri()", script)
+        self.assertIn("ss://", script)
+
+    def test_port_conflict_prompt_is_not_caddy_specific(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("show_port_usage", script)
+        self.assertIn("我确认要停用占用端口的 systemd 服务", script)
+        self.assertIn("请输入要停用的 systemd 服务名", script)
+        self.assertNotIn("caddy", script.lower())
 
 
 if __name__ == "__main__":

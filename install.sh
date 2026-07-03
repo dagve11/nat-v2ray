@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 PROJECT_NAME="nat-v2ray"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HY2_CONFIG_DIR="/etc/hysteria"
@@ -138,6 +138,14 @@ urlencode() {
     unset LC_ALL
   fi
   printf '%s\n' "${encoded}"
+}
+
+base64_no_wrap() {
+  if base64 --help 2>&1 | grep -q -- '-w'; then
+    base64 -w 0
+  else
+    base64 | tr -d '\n'
+  fi
 }
 
 install_base_packages() {
@@ -377,7 +385,7 @@ EOF
         port_ref="$(prompt_port '请输入新的端口' "${port_ref}")"
         ;;
       2)
-        printf '请输入要停用的服务名，例如 nginx 或 caddy: ' >&2
+        printf '请输入要停用的 systemd 服务名，留空返回: ' >&2
         read -r service_name
         if [ -z "${service_name}" ]; then
           yellow "未输入服务名，返回端口处理菜单"
@@ -899,6 +907,153 @@ build_trojan_tls_uri() {
     "${encoded_password}" "${host}" "${port}" "${encoded_domain}" "${host}"
 }
 
+render_vmess_tcp_config() {
+  local port="$1"
+  local uuid="$2"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vmess-tcp",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "alterId": 0
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_vmess_ws_config() {
+  local port="$1"
+  local uuid="$2"
+  local ws_path="$3"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vmess-ws",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "alterId": 0
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "none",
+        "wsSettings": {
+          "path": "${ws_path}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+build_vmess_link() {
+  local name="$1"
+  local host="$2"
+  local port="$3"
+  local uuid="$4"
+  local network="$5"
+  local ws_path="$6"
+  local host_header="$7"
+  local json
+
+  if [ "${network}" = "ws" ]; then
+    json="{\"v\":\"2\",\"ps\":\"${name}\",\"add\":\"${host}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"${host_header}\",\"path\":\"${ws_path}\",\"tls\":\"\"}"
+  else
+    json="{\"v\":\"2\",\"ps\":\"${name}\",\"add\":\"${host}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"tcp\",\"type\":\"none\",\"host\":\"\",\"path\":\"\",\"tls\":\"\"}"
+  fi
+
+  printf 'vmess://%s\n' "$(printf '%s' "${json}" | base64_no_wrap)"
+}
+
+render_shadowsocks_config() {
+  local port="$1"
+  local method="$2"
+  local password="$3"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "shadowsocks",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "shadowsocks",
+      "settings": {
+        "method": "${method}",
+        "password": "${password}",
+        "network": "tcp,udp"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+build_shadowsocks_uri() {
+  local host="$1"
+  local port="$2"
+  local method="$3"
+  local password="$4"
+  local encoded_userinfo
+  local encoded_name
+
+  encoded_userinfo="$(printf '%s' "${method}:${password}" | base64_no_wrap | tr '+/' '-_' | tr -d '=')"
+  encoded_name="$(urlencode "SS-${host}")"
+  printf 'ss://%s@%s:%s#%s\n' "${encoded_userinfo}" "${host}" "${port}" "${encoded_name}"
+}
+
 normalize_ws_path() {
   local path="$1"
   if [[ "${path}" != /* ]]; then
@@ -1042,6 +1197,174 @@ EOF
   echo "${uri}"
 }
 
+vmess_tcp_install() {
+  local detected_ip
+  local server_host
+  local port
+  local uuid
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 VMess TCP 端口，必须在 NAT 面板转发 TCP' '10086')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+
+  yellow "VMess TCP 不带 TLS，适合临时或内测使用；公网长期使用建议优先 Reality/HY2/TLS。"
+  if ! prompt_yes_no '确认继续安装 VMess TCP' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vmess_tcp_config "${port}" "${uuid}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vmess-tcp
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vmess_link "VMess-TCP-${server_host}" "${server_host}" "${port}" "${uuid}" 'tcp' '' '')"
+
+  echo
+  green "VMess TCP 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+vmess_ws_install() {
+  local detected_ip
+  local server_host
+  local port
+  local uuid
+  local ws_path
+  local host_header
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 VMess WS TCP 端口，必须在 NAT 面板转发 TCP' '10087')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
+  host_header="$(prompt_value '请输入 WebSocket Host 伪装域名，留空使用连接地址' "${server_host}")"
+
+  yellow "VMess WS 当前不带 TLS；如需 TLS 请用 VLESS WS TLS。"
+  if ! prompt_yes_no '确认继续安装 VMess WS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vmess_ws_config "${port}" "${uuid}" "${ws_path}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vmess-ws
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+WS_PATH=${ws_path}
+WS_HOST=${host_header}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vmess_link "VMess-WS-${server_host}" "${server_host}" "${port}" "${uuid}" 'ws' "${ws_path}" "${host_header}")"
+
+  echo
+  green "VMess WS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+shadowsocks_install() {
+  local detected_ip
+  local server_host
+  local port
+  local method
+  local password
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 Shadowsocks 端口，TCP/UDP 都建议在 NAT 面板转发' '10088')"
+  ensure_port_available port
+  method="$(prompt_value '请输入加密方法' 'chacha20-ietf-poly1305')"
+  password="$(prompt_value '请输入 Shadowsocks 密码，留空使用随机值' "$(random_hex 16)")"
+
+  yellow "Shadowsocks 配置为 tcp,udp；如果 NAT 面板只转发 TCP，UDP 功能不可用但 TCP 仍可用。"
+  if ! prompt_yes_no '确认继续安装 Shadowsocks' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_shadowsocks_config "${port}" "${method}" "${password}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=shadowsocks
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+SS_METHOD=${method}
+SS_PASSWORD=${password}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_shadowsocks_uri "${server_host}" "${port}" "${method}" "${password}")"
+
+  echo
+  green "Shadowsocks 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
 txt_check_tool() {
   local domain
   local expected
@@ -1070,7 +1393,10 @@ show_menu() {
   2) VLESS Reality - TCP，不需要 TLS 证书
   3) VLESS WS TLS - TCP，TLS 使用 TXT 检测
   4) Trojan TLS - TCP，TLS 使用 TXT 检测
-  5) TLS TXT 检测工具
+  5) VMess TCP - TCP，不带 TLS
+  6) VMess WS - TCP，不带 TLS
+  7) Shadowsocks - TCP/UDP
+  8) TLS TXT 检测工具
   0) 退出
 EOF
 }
@@ -1088,7 +1414,10 @@ main() {
       2) reality_install ;;
       3) vless_ws_tls_install ;;
       4) trojan_tls_install ;;
-      5) txt_check_tool ;;
+      5) vmess_tcp_install ;;
+      6) vmess_ws_install ;;
+      7) shadowsocks_install ;;
+      8) txt_check_tool ;;
       0) exit 0 ;;
       *) yellow "无效选项" ;;
     esac
