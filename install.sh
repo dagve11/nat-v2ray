@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.9.0"
+VERSION="0.10.0"
 PROJECT_NAME="nat-v2ray"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HY2_CONFIG_DIR="/etc/hysteria"
@@ -1513,6 +1513,51 @@ render_vless_ws_config() {
 EOF
 }
 
+render_vless_httpupgrade_config() {
+  local port="$1"
+  local uuid="$2"
+  local http_path="$3"
+  local host_header="$4"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-httpupgrade",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "httpupgrade",
+        "security": "none",
+        "httpupgradeSettings": {
+          "path": "${http_path}",
+          "host": "${host_header}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
 render_vless_tcp_dynamic_config() {
   local port_range="$1"
   local uuid="$2"
@@ -1627,7 +1672,7 @@ build_vless_uri() {
   encoded_host="$(urlencode "${host_header}")"
   encoded_seed="$(urlencode "${seed}")"
 
-  if [ "${network}" = "ws" ]; then
+  if [ "${network}" = "ws" ] || [ "${network}" = "httpupgrade" ]; then
     extra="$(printf '&host=%s&path=%s' "${encoded_host}" "${encoded_path}")"
   fi
   if [ "${network}" = "kcp" ]; then
@@ -1829,6 +1874,51 @@ render_vmess_ws_config() {
 EOF
 }
 
+render_vmess_httpupgrade_config() {
+  local port="$1"
+  local uuid="$2"
+  local http_path="$3"
+  local host_header="$4"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vmess-httpupgrade",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "alterId": 0
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "httpupgrade",
+        "security": "none",
+        "httpupgradeSettings": {
+          "path": "${http_path}",
+          "host": "${host_header}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
 render_vmess_tcp_dynamic_config() {
   local port_range="$1"
   local uuid="$2"
@@ -1942,7 +2032,7 @@ build_vmess_link() {
     link_host=""
   fi
 
-  if [ "${network}" = "ws" ] || [ "${network}" = "grpc" ] || [ "${network}" = "kcp" ]; then
+  if [ "${network}" = "ws" ] || [ "${network}" = "grpc" ] || [ "${network}" = "kcp" ] || [ "${network}" = "httpupgrade" ]; then
     json="{\"v\":\"2\",\"ps\":\"${name}\",\"add\":\"${host}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"${network}\",\"type\":\"${type}\",\"host\":\"${link_host}\",\"path\":\"${ws_path}\",\"tls\":\"${tls}\"}"
   else
     json="{\"v\":\"2\",\"ps\":\"${name}\",\"add\":\"${host}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"tcp\",\"type\":\"none\",\"host\":\"\",\"path\":\"\",\"tls\":\"\"}"
@@ -2223,6 +2313,68 @@ EOF
 
   echo
   green "VLESS WS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+vless_httpupgrade_install() {
+  local detected_ip
+  local server_host
+  local port
+  local uuid
+  local http_path
+  local host_header
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 VLESS HTTPUpgrade TCP 端口，必须在 NAT 面板转发 TCP' '10093')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  http_path="$(normalize_ws_path "$(prompt_value '请输入 HTTPUpgrade 路径' "/$(random_hex 8)")")"
+  host_header="$(prompt_value '请输入 HTTPUpgrade Host 伪装域名，留空使用连接地址' "${server_host}")"
+
+  yellow "VLESS HTTPUpgrade 当前不带 TLS；如需证书保护，后续使用 TLS 类协议。"
+  if ! prompt_yes_no '确认继续安装 VLESS HTTPUpgrade' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vless_httpupgrade_config "${port}" "${uuid}" "${http_path}" "${host_header}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vless-httpupgrade
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+HTTP_PATH=${http_path}
+HTTP_HOST=${host_header}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vless_uri "VLESS-HTTPUpgrade-${server_host}" "${server_host}" "${port}" "${uuid}" 'httpupgrade' "${http_path}" "${host_header}" 'none')"
+
+  echo
+  green "VLESS HTTPUpgrade 安装完成"
   echo "服务状态：$(systemctl is-active xray || true)"
   echo
   echo "监听检查："
@@ -2778,6 +2930,68 @@ EOF
   echo
   green "VMess WS 安装完成"
   echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+vmess_httpupgrade_install() {
+  local detected_ip
+  local server_host
+  local port
+  local uuid
+  local http_path
+  local host_header
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 VMess HTTPUpgrade TCP 端口，必须在 NAT 面板转发 TCP' '10094')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+  http_path="$(normalize_ws_path "$(prompt_value '请输入 HTTPUpgrade 路径' "/$(random_hex 8)")")"
+  host_header="$(prompt_value '请输入 HTTPUpgrade Host 伪装域名，留空使用连接地址' "${server_host}")"
+
+  yellow "VMess HTTPUpgrade 当前不带 TLS；公网长期使用建议优先 VLESS/Reality/HY2/TLS。"
+  if ! prompt_yes_no '确认继续安装 VMess HTTPUpgrade' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vmess_httpupgrade_config "${port}" "${uuid}" "${http_path}" "${host_header}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vmess-httpupgrade
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+HTTP_PATH=${http_path}
+HTTP_HOST=${host_header}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vmess_link "VMess-HTTPUpgrade-${server_host}" "${server_host}" "${port}" "${uuid}" 'httpupgrade' "${http_path}" "${host_header}")"
+
+  echo
+  green "VMess HTTPUpgrade 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
   echo
   echo "分享链接："
   echo "${uri}"
@@ -3531,7 +3745,9 @@ show_menu() {
   22) VLESS WS dynamic port - TCP 端口范围
   23) VLESS TCP TLS - TCP，TLS 使用 TXT 检测
   24) VMess TCP TLS - TCP，TLS 使用 TXT 检测
-  25) TLS TXT 检测工具
+  25) VLESS HTTPUpgrade - TCP，不带 TLS
+  26) VMess HTTPUpgrade - TCP，不带 TLS
+  27) TLS TXT 检测工具
   0) 退出
 EOF
 }
@@ -3569,7 +3785,9 @@ main() {
       22) vless_ws_dynamic_install ;;
       23) vless_tcp_tls_install ;;
       24) vmess_tcp_tls_install ;;
-      25) txt_check_tool ;;
+      25) vless_httpupgrade_install ;;
+      26) vmess_httpupgrade_install ;;
+      27) txt_check_tool ;;
       0) exit 0 ;;
       *) yellow "无效选项" ;;
     esac

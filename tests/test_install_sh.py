@@ -66,7 +66,9 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("22) VLESS WS dynamic port", script)
         self.assertIn("23) VLESS TCP TLS", script)
         self.assertIn("24) VMess TCP TLS", script)
-        self.assertIn("25) TLS TXT", script)
+        self.assertIn("25) VLESS HTTPUpgrade", script)
+        self.assertIn("26) VMess HTTPUpgrade", script)
+        self.assertIn("27) TLS TXT", script)
         self.assertIn("TXT", script)
 
     def test_reality_supports_xray_config_and_share_uri(self) -> None:
@@ -145,6 +147,22 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('"allocate"', script)
         self.assertIn('"strategy": "random"', script)
         self.assertIn("TCP 端口范围", script)
+
+    def test_httpupgrade_protocols_render_configs_and_links(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("render_vless_httpupgrade_config()", script)
+        self.assertIn("render_vmess_httpupgrade_config()", script)
+        self.assertIn("vless_httpupgrade_install()", script)
+        self.assertIn("vmess_httpupgrade_install()", script)
+        self.assertIn('"network": "httpupgrade"', script)
+        self.assertIn('"httpupgradeSettings"', script)
+        self.assertIn('"path": "${http_path}"', script)
+        self.assertIn('"host": "${host_header}"', script)
+        self.assertIn("VLESS-HTTPUpgrade", script)
+        self.assertIn("type=%s", script)
+        self.assertIn('\\"net\\":\\"${network}\\"', script)
+        self.assertIn("'httpupgrade'", script)
 
     def test_vmess_mkcp_protocols_render_configs_and_links(self) -> None:
         script = read_install_script()
