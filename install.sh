@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.5.0"
+VERSION="0.6.0"
 PROJECT_NAME="nat-v2ray"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HY2_CONFIG_DIR="/etc/hysteria"
@@ -1310,6 +1310,230 @@ render_trojan_grpc_tls_config() {
 EOF
 }
 
+render_vless_tcp_config() {
+  local port="$1"
+  local uuid="$2"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-tcp",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_vless_ws_config() {
+  local port="$1"
+  local uuid="$2"
+  local ws_path="$3"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-ws",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "none",
+        "wsSettings": {
+          "path": "${ws_path}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+build_vless_uri() {
+  local name="$1"
+  local host="$2"
+  local port="$3"
+  local uuid="$4"
+  local network="$5"
+  local path="${6:-}"
+  local host_header="${7:-}"
+  local tls="${8:-none}"
+  local seed="${9:-}"
+  local header_type="${10:-none}"
+  local encoded_name
+  local encoded_path
+  local encoded_host
+  local encoded_seed
+  local extra=""
+
+  encoded_name="$(urlencode "${name}")"
+  encoded_path="$(urlencode "${path}")"
+  encoded_host="$(urlencode "${host_header}")"
+  encoded_seed="$(urlencode "${seed}")"
+
+  if [ "${network}" = "ws" ]; then
+    extra="$(printf '&host=%s&path=%s' "${encoded_host}" "${encoded_path}")"
+  fi
+  if [ "${network}" = "kcp" ]; then
+    extra="$(printf '&headerType=%s&seed=%s' "${header_type}" "${encoded_seed}")"
+  fi
+
+  printf 'vless://%s@%s:%s?encryption=none&security=%s&type=%s%s#%s\n' \
+    "${uuid}" "${host}" "${port}" "${tls}" "${network}" "${extra}" "${encoded_name}"
+}
+
+render_vless_mkcp_config() {
+  local port="$1"
+  local uuid="$2"
+  local header_type="$3"
+  local seed="$4"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-mkcp",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "kcp",
+        "security": "none",
+        "kcpSettings": {
+          "mtu": 1350,
+          "tti": 50,
+          "uplinkCapacity": 5,
+          "downlinkCapacity": 20
+        },
+        "finalmask": {
+          "udp": [
+$(render_kcp_finalmask_udp "${header_type}" "${seed}")
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_vless_mkcp_dynamic_config() {
+  local port_range="$1"
+  local uuid="$2"
+  local header_type="$3"
+  local seed="$4"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-mkcp-dynamic",
+      "listen": "0.0.0.0",
+      "port": "${port_range}",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "kcp",
+        "security": "none",
+        "kcpSettings": {
+          "mtu": 1350,
+          "tti": 50,
+          "uplinkCapacity": 5,
+          "downlinkCapacity": 20
+        },
+        "finalmask": {
+          "udp": [
+$(render_kcp_finalmask_udp "${header_type}" "${seed}")
+          ]
+        }
+      },
+      "allocate": {
+        "strategy": "random",
+        "refresh": 5,
+        "concurrency": 3
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
 render_vmess_tcp_config() {
   local port="$1"
   local uuid="$2"
@@ -1583,6 +1807,248 @@ normalize_ws_path() {
     path="/${path}"
   fi
   printf '%s\n' "${path}"
+}
+
+vless_tcp_install() {
+  local detected_ip
+  local server_host
+  local port
+  local uuid
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 VLESS TCP 端口，必须在 NAT 面板转发 TCP' '10090')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+
+  yellow "VLESS TCP 不带 TLS，适合临时测试；公网长期使用建议优先 Reality/HY2/TLS。"
+  if ! prompt_yes_no '确认继续安装 VLESS TCP' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vless_tcp_config "${port}" "${uuid}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vless-tcp
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vless_uri "VLESS-TCP-${server_host}" "${server_host}" "${port}" "${uuid}" 'tcp' '' '' 'none')"
+
+  echo
+  green "VLESS TCP 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+vless_ws_install() {
+  local detected_ip
+  local server_host
+  local port
+  local uuid
+  local ws_path
+  local host_header
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 VLESS WS TCP 端口，必须在 NAT 面板转发 TCP' '10091')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
+  host_header="$(prompt_value '请输入 WebSocket Host 伪装域名，留空使用连接地址' "${server_host}")"
+
+  yellow "VLESS WS 当前不带 TLS；如需 TLS 请用 VLESS WS TLS。"
+  if ! prompt_yes_no '确认继续安装 VLESS WS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vless_ws_config "${port}" "${uuid}" "${ws_path}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vless-ws
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+WS_PATH=${ws_path}
+WS_HOST=${host_header}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vless_uri "VLESS-WS-${server_host}" "${server_host}" "${port}" "${uuid}" 'ws' "${ws_path}" "${host_header}" 'none')"
+
+  echo
+  green "VLESS WS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+vless_mkcp_install() {
+  local detected_ip
+  local server_host
+  local port
+  local uuid
+  local header_type
+  local seed
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 VLESS mKCP UDP 端口，必须在 NAT 面板转发 UDP' '10092')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  header_type="$(prompt_kcp_header_type '请输入 mKCP header type' 'none')"
+  seed="$(prompt_value '请输入 mKCP seed，留空使用随机值' "$(random_hex 8)")"
+
+  yellow "VLESS mKCP 走 UDP。请确认 NAT 面板已转发 UDP ${port} 到本机，不是 TCP。"
+  if ! prompt_yes_no '确认继续安装 VLESS mKCP' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vless_mkcp_config "${port}" "${uuid}" "${header_type}" "${seed}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vless-mkcp
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+KCP_HEADER_TYPE=${header_type}
+KCP_SEED=${seed}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vless_uri "VLESS-mKCP-${server_host}" "${server_host}" "${port}" "${uuid}" 'kcp' '' '' 'none' "${seed}" "${header_type}")"
+
+  echo
+  green "VLESS mKCP 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lunp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+  echo
+  yellow "如果客户端连不上，优先检查 NAT 面板是否转发 UDP ${port}。"
+}
+
+vless_mkcp_dynamic_install() {
+  local detected_ip
+  local server_host
+  local port_range
+  local uuid
+  local header_type
+  local seed
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port_range="$(prompt_port_range '请输入 VLESS mKCP UDP 端口范围，必须在 NAT 面板转发整个 UDP 端口范围' '20100-20110')"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  header_type="$(prompt_kcp_header_type '请输入 mKCP header type' 'none')"
+  seed="$(prompt_value '请输入 mKCP seed，留空使用随机值' "$(random_hex 8)")"
+
+  yellow "VLESS mKCP dynamic port 会在 UDP 端口范围 ${port_range} 中随机监听。NAT 面板必须转发整个 UDP 端口范围。"
+  if ! prompt_yes_no '确认继续安装 VLESS mKCP dynamic port' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vless_mkcp_dynamic_config "${port_range}" "${uuid}" "${header_type}" "${seed}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vless-mkcp-dynamic
+XRAY_HOST=${server_host}
+XRAY_PORT_RANGE=${port_range}
+XRAY_UUID=${uuid}
+KCP_HEADER_TYPE=${header_type}
+KCP_SEED=${seed}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vless_uri "VLESS-mKCP-dynamic-${server_host}" "${server_host}" "${port_range}" "${uuid}" 'kcp' '' '' 'none' "${seed}" "${header_type}")"
+
+  echo
+  green "VLESS mKCP dynamic port 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+  echo
+  yellow "如果客户端连不上，优先检查 NAT 面板是否转发整个 UDP 端口范围 ${port_range}。"
 }
 
 vless_ws_tls_install() {
@@ -2390,7 +2856,11 @@ show_menu() {
   12) Trojan gRPC TLS - TCP，TLS 使用 TXT 检测
   13) VMess mKCP - UDP，不带 TLS
   14) VMess mKCP dynamic port - UDP 端口范围
-  15) TLS TXT 检测工具
+  15) VLESS TCP - TCP，不带 TLS
+  16) VLESS WS - TCP，不带 TLS
+  17) VLESS mKCP - UDP，不带 TLS
+  18) VLESS mKCP dynamic port - UDP 端口范围
+  19) TLS TXT 检测工具
   0) 退出
 EOF
 }
@@ -2418,7 +2888,11 @@ main() {
       12) trojan_grpc_tls_install ;;
       13) vmess_mkcp_install ;;
       14) vmess_mkcp_dynamic_install ;;
-      15) txt_check_tool ;;
+      15) vless_tcp_install ;;
+      16) vless_ws_install ;;
+      17) vless_mkcp_install ;;
+      18) vless_mkcp_dynamic_install ;;
+      19) txt_check_tool ;;
       0) exit 0 ;;
       *) yellow "无效选项" ;;
     esac

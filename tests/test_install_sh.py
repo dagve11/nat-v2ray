@@ -56,7 +56,11 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("12) Trojan gRPC TLS", script)
         self.assertIn("13) VMess mKCP", script)
         self.assertIn("14) VMess mKCP dynamic port", script)
-        self.assertIn("15) TLS TXT", script)
+        self.assertIn("15) VLESS TCP", script)
+        self.assertIn("16) VLESS WS", script)
+        self.assertIn("17) VLESS mKCP", script)
+        self.assertIn("18) VLESS mKCP dynamic port", script)
+        self.assertIn("19) TLS TXT", script)
         self.assertIn("TXT", script)
 
     def test_reality_supports_xray_config_and_share_uri(self) -> None:
@@ -90,6 +94,26 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("render_trojan_grpc_tls_config()", script)
         self.assertIn("build_vless_ws_tls_uri()", script)
         self.assertIn("build_trojan_tls_uri()", script)
+
+    def test_vless_plain_protocols_render_xray_configs_and_links(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("render_vless_tcp_config()", script)
+        self.assertIn("render_vless_ws_config()", script)
+        self.assertIn("render_vless_mkcp_config()", script)
+        self.assertIn("render_vless_mkcp_dynamic_config()", script)
+        self.assertIn('"protocol": "vless"', script)
+        self.assertIn('"decryption": "none"', script)
+        self.assertIn('"network": "tcp"', script)
+        self.assertIn('"network": "ws"', script)
+        self.assertIn('"network": "kcp"', script)
+        self.assertIn('"finalmask"', script)
+        self.assertIn('"allocate"', script)
+        self.assertIn("build_vless_uri()", script)
+        self.assertIn("vless://%s@%s:%s", script)
+        self.assertIn("encryption=none", script)
+        self.assertIn("type=%s", script)
+        self.assertIn("seed=%s", script)
 
     def test_vmess_protocols_render_xray_configs_and_links(self) -> None:
         script = read_install_script()
