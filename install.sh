@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 PROJECT_NAME="nat-v2ray"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HY2_CONFIG_DIR="/etc/hysteria"
@@ -907,6 +907,315 @@ build_trojan_tls_uri() {
     "${encoded_password}" "${host}" "${port}" "${encoded_domain}" "${host}"
 }
 
+build_vless_grpc_tls_uri() {
+  local host="$1"
+  local port="$2"
+  local uuid="$3"
+  local domain="$4"
+  local service_name="$5"
+  local encoded_domain
+  local encoded_service_name
+  encoded_domain="$(urlencode "${domain}")"
+  encoded_service_name="$(urlencode "${service_name}")"
+  printf 'vless://%s@%s:%s?encryption=none&security=tls&type=grpc&serviceName=%s&mode=gun&sni=%s#VLESS-gRPC-TLS-%s\n' \
+    "${uuid}" "${host}" "${port}" "${encoded_service_name}" "${encoded_domain}" "${host}"
+}
+
+build_trojan_ws_tls_uri() {
+  local host="$1"
+  local port="$2"
+  local password="$3"
+  local domain="$4"
+  local ws_path="$5"
+  local encoded_password
+  local encoded_domain
+  local encoded_path
+  encoded_password="$(urlencode "${password}")"
+  encoded_domain="$(urlencode "${domain}")"
+  encoded_path="$(urlencode "${ws_path}")"
+  printf 'trojan://%s@%s:%s?security=tls&type=ws&host=%s&sni=%s&path=%s#Trojan-WS-TLS-%s\n' \
+    "${encoded_password}" "${host}" "${port}" "${encoded_domain}" "${encoded_domain}" "${encoded_path}" "${host}"
+}
+
+build_trojan_grpc_tls_uri() {
+  local host="$1"
+  local port="$2"
+  local password="$3"
+  local domain="$4"
+  local service_name="$5"
+  local encoded_password
+  local encoded_domain
+  local encoded_service_name
+  encoded_password="$(urlencode "${password}")"
+  encoded_domain="$(urlencode "${domain}")"
+  encoded_service_name="$(urlencode "${service_name}")"
+  printf 'trojan://%s@%s:%s?security=tls&type=grpc&serviceName=%s&mode=gun&sni=%s#Trojan-gRPC-TLS-%s\n' \
+    "${encoded_password}" "${host}" "${port}" "${encoded_service_name}" "${encoded_domain}" "${host}"
+}
+
+render_vmess_ws_tls_config() {
+  local port="$1"
+  local uuid="$2"
+  local ws_path="$3"
+  local cert_file="$4"
+  local key_file="$5"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vmess-ws-tls",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "alterId": 0
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "${cert_file}",
+              "keyFile": "${key_file}"
+            }
+          ]
+        },
+        "wsSettings": {
+          "path": "${ws_path}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_vmess_grpc_tls_config() {
+  local port="$1"
+  local uuid="$2"
+  local service_name="$3"
+  local cert_file="$4"
+  local key_file="$5"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vmess-grpc-tls",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "alterId": 0
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "grpc",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "${cert_file}",
+              "keyFile": "${key_file}"
+            }
+          ]
+        },
+        "grpcSettings": {
+          "serviceName": "${service_name}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_vless_grpc_tls_config() {
+  local port="$1"
+  local uuid="$2"
+  local service_name="$3"
+  local cert_file="$4"
+  local key_file="$5"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-grpc-tls",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "grpc",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "${cert_file}",
+              "keyFile": "${key_file}"
+            }
+          ]
+        },
+        "grpcSettings": {
+          "serviceName": "${service_name}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_trojan_ws_tls_config() {
+  local port="$1"
+  local password="$2"
+  local ws_path="$3"
+  local cert_file="$4"
+  local key_file="$5"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "trojan-ws-tls",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "trojan",
+      "settings": {
+        "clients": [
+          {
+            "password": "${password}"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "${cert_file}",
+              "keyFile": "${key_file}"
+            }
+          ]
+        },
+        "wsSettings": {
+          "path": "${ws_path}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_trojan_grpc_tls_config() {
+  local port="$1"
+  local password="$2"
+  local service_name="$3"
+  local cert_file="$4"
+  local key_file="$5"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "trojan-grpc-tls",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "trojan",
+      "settings": {
+        "clients": [
+          {
+            "password": "${password}"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "grpc",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "${cert_file}",
+              "keyFile": "${key_file}"
+            }
+          ]
+        },
+        "grpcSettings": {
+          "serviceName": "${service_name}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
 render_vmess_tcp_config() {
   local port="$1"
   local uuid="$2"
@@ -997,10 +1306,16 @@ build_vmess_link() {
   local network="$5"
   local ws_path="$6"
   local host_header="$7"
+  local tls="${8:-}"
+  local type="none"
   local json
 
-  if [ "${network}" = "ws" ]; then
-    json="{\"v\":\"2\",\"ps\":\"${name}\",\"add\":\"${host}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"${host_header}\",\"path\":\"${ws_path}\",\"tls\":\"\"}"
+  if [ "${network}" = "grpc" ]; then
+    type="gun"
+  fi
+
+  if [ "${network}" = "ws" ] || [ "${network}" = "grpc" ]; then
+    json="{\"v\":\"2\",\"ps\":\"${name}\",\"add\":\"${host}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"${network}\",\"type\":\"${type}\",\"host\":\"${host_header}\",\"path\":\"${ws_path}\",\"tls\":\"${tls}\"}"
   else
     json="{\"v\":\"2\",\"ps\":\"${name}\",\"add\":\"${host}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"tcp\",\"type\":\"none\",\"host\":\"\",\"path\":\"\",\"tls\":\"\"}"
   fi
@@ -1365,6 +1680,351 @@ EOF
   echo "${uri}"
 }
 
+vmess_ws_tls_install() {
+  local detected_ip
+  local server_host
+  local domain
+  local port
+  local uuid
+  local ws_path
+  local cert_dir
+  local cert_file
+  local key_file
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  port="$(prompt_port '请输入 VMess WS TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
+
+  yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
+  if ! prompt_yes_no '确认继续安装 VMess WS TLS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  request_tls_cert_manual_dns "${domain}"
+  cert_dir="$(cert_dir_for_domain "${domain}")"
+  cert_file="${cert_dir}/fullchain.cer"
+  key_file="${cert_dir}/private.key"
+
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vmess_ws_tls_config "${port}" "${uuid}" "${ws_path}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vmess-ws-tls
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+TLS_DOMAIN=${domain}
+WS_PATH=${ws_path}
+TLS_CERT=${cert_file}
+TLS_KEY=${key_file}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vmess_link "VMess-WS-TLS-${server_host}" "${server_host}" "${port}" "${uuid}" 'ws' "${ws_path}" "${domain}" 'tls')"
+
+  echo
+  green "VMess WS TLS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+vmess_grpc_tls_install() {
+  local detected_ip
+  local server_host
+  local domain
+  local port
+  local uuid
+  local service_name
+  local cert_dir
+  local cert_file
+  local key_file
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  port="$(prompt_port '请输入 VMess gRPC TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+  service_name="$(prompt_value '请输入 gRPC serviceName' "$(random_hex 8)")"
+
+  yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
+  if ! prompt_yes_no '确认继续安装 VMess gRPC TLS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  request_tls_cert_manual_dns "${domain}"
+  cert_dir="$(cert_dir_for_domain "${domain}")"
+  cert_file="${cert_dir}/fullchain.cer"
+  key_file="${cert_dir}/private.key"
+
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vmess_grpc_tls_config "${port}" "${uuid}" "${service_name}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vmess-grpc-tls
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+TLS_DOMAIN=${domain}
+GRPC_SERVICE_NAME=${service_name}
+TLS_CERT=${cert_file}
+TLS_KEY=${key_file}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vmess_link "VMess-gRPC-TLS-${server_host}" "${server_host}" "${port}" "${uuid}" 'grpc' "${service_name}" "${domain}" 'tls')"
+
+  echo
+  green "VMess gRPC TLS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+vless_grpc_tls_install() {
+  local detected_ip
+  local server_host
+  local domain
+  local port
+  local uuid
+  local service_name
+  local cert_dir
+  local cert_file
+  local key_file
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  port="$(prompt_port '请输入 VLESS gRPC TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  service_name="$(prompt_value '请输入 gRPC serviceName' "$(random_hex 8)")"
+
+  yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
+  if ! prompt_yes_no '确认继续安装 VLESS gRPC TLS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  request_tls_cert_manual_dns "${domain}"
+  cert_dir="$(cert_dir_for_domain "${domain}")"
+  cert_file="${cert_dir}/fullchain.cer"
+  key_file="${cert_dir}/private.key"
+
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vless_grpc_tls_config "${port}" "${uuid}" "${service_name}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vless-grpc-tls
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+TLS_DOMAIN=${domain}
+GRPC_SERVICE_NAME=${service_name}
+TLS_CERT=${cert_file}
+TLS_KEY=${key_file}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vless_grpc_tls_uri "${server_host}" "${port}" "${uuid}" "${domain}" "${service_name}")"
+
+  echo
+  green "VLESS gRPC TLS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+trojan_ws_tls_install() {
+  local detected_ip
+  local server_host
+  local domain
+  local port
+  local password
+  local ws_path
+  local cert_dir
+  local cert_file
+  local key_file
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  port="$(prompt_port '请输入 Trojan WS TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')"
+  ensure_port_available port
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
+
+  yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
+  if ! prompt_yes_no '确认继续安装 Trojan WS TLS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  request_tls_cert_manual_dns "${domain}"
+  cert_dir="$(cert_dir_for_domain "${domain}")"
+  cert_file="${cert_dir}/fullchain.cer"
+  key_file="${cert_dir}/private.key"
+
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_trojan_ws_tls_config "${port}" "${password}" "${ws_path}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=trojan-ws-tls
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+TROJAN_PASSWORD=${password}
+TLS_DOMAIN=${domain}
+WS_PATH=${ws_path}
+TLS_CERT=${cert_file}
+TLS_KEY=${key_file}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_trojan_ws_tls_uri "${server_host}" "${port}" "${password}" "${domain}" "${ws_path}")"
+
+  echo
+  green "Trojan WS TLS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+trojan_grpc_tls_install() {
+  local detected_ip
+  local server_host
+  local domain
+  local port
+  local password
+  local service_name
+  local cert_dir
+  local cert_file
+  local key_file
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  port="$(prompt_port '请输入 Trojan gRPC TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')"
+  ensure_port_available port
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
+  service_name="$(prompt_value '请输入 gRPC serviceName' "$(random_hex 8)")"
+
+  yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
+  if ! prompt_yes_no '确认继续安装 Trojan gRPC TLS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  request_tls_cert_manual_dns "${domain}"
+  cert_dir="$(cert_dir_for_domain "${domain}")"
+  cert_file="${cert_dir}/fullchain.cer"
+  key_file="${cert_dir}/private.key"
+
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_trojan_grpc_tls_config "${port}" "${password}" "${service_name}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=trojan-grpc-tls
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+TROJAN_PASSWORD=${password}
+TLS_DOMAIN=${domain}
+GRPC_SERVICE_NAME=${service_name}
+TLS_CERT=${cert_file}
+TLS_KEY=${key_file}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_trojan_grpc_tls_uri "${server_host}" "${port}" "${password}" "${domain}" "${service_name}")"
+
+  echo
+  green "Trojan gRPC TLS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
 txt_check_tool() {
   local domain
   local expected
@@ -1380,11 +2040,6 @@ txt_check_tool() {
   wait_for_txt_record "${domain}" "${expected}"
 }
 
-coming_soon() {
-  local name="$1"
-  yellow "${name} 正在规划中。第一版先提供 HY2 和 TLS TXT 检测工具。"
-}
-
 show_menu() {
   cat <<EOF
 
@@ -1396,7 +2051,12 @@ show_menu() {
   5) VMess TCP - TCP，不带 TLS
   6) VMess WS - TCP，不带 TLS
   7) Shadowsocks - TCP/UDP
-  8) TLS TXT 检测工具
+  8) VMess WS TLS - TCP，TLS 使用 TXT 检测
+  9) VMess gRPC TLS - TCP，TLS 使用 TXT 检测
+  10) VLESS gRPC TLS - TCP，TLS 使用 TXT 检测
+  11) Trojan WS TLS - TCP，TLS 使用 TXT 检测
+  12) Trojan gRPC TLS - TCP，TLS 使用 TXT 检测
+  13) TLS TXT 检测工具
   0) 退出
 EOF
 }
@@ -1417,7 +2077,12 @@ main() {
       5) vmess_tcp_install ;;
       6) vmess_ws_install ;;
       7) shadowsocks_install ;;
-      8) txt_check_tool ;;
+      8) vmess_ws_tls_install ;;
+      9) vmess_grpc_tls_install ;;
+      10) vless_grpc_tls_install ;;
+      11) trojan_ws_tls_install ;;
+      12) trojan_grpc_tls_install ;;
+      13) txt_check_tool ;;
       0) exit 0 ;;
       *) yellow "无效选项" ;;
     esac

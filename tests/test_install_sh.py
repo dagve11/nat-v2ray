@@ -49,6 +49,11 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("5) VMess TCP", script)
         self.assertIn("6) VMess WS", script)
         self.assertIn("7) Shadowsocks", script)
+        self.assertIn("8) VMess WS TLS", script)
+        self.assertIn("9) VMess gRPC TLS", script)
+        self.assertIn("10) VLESS gRPC TLS", script)
+        self.assertIn("11) Trojan WS TLS", script)
+        self.assertIn("12) Trojan gRPC TLS", script)
         self.assertIn("TXT", script)
 
     def test_reality_supports_xray_config_and_share_uri(self) -> None:
@@ -75,6 +80,11 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("wait_for_txt_record", script)
         self.assertIn("render_vless_ws_tls_config()", script)
         self.assertIn("render_trojan_tls_config()", script)
+        self.assertIn("render_vmess_ws_tls_config()", script)
+        self.assertIn("render_vmess_grpc_tls_config()", script)
+        self.assertIn("render_vless_grpc_tls_config()", script)
+        self.assertIn("render_trojan_ws_tls_config()", script)
+        self.assertIn("render_trojan_grpc_tls_config()", script)
         self.assertIn("build_vless_ws_tls_uri()", script)
         self.assertIn("build_trojan_tls_uri()", script)
 
@@ -88,7 +98,8 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("build_vmess_link()", script)
         self.assertIn("base64_no_wrap", script)
         self.assertIn('\\"net\\":\\"tcp\\"', script)
-        self.assertIn('\\"net\\":\\"ws\\"', script)
+        self.assertIn('\\"net\\":\\"${network}\\"', script)
+        self.assertIn("'ws'", script)
 
     def test_shadowsocks_renders_xray_config_and_ss_uri(self) -> None:
         script = read_install_script()
@@ -99,6 +110,26 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('"password": "${password}"', script)
         self.assertIn("build_shadowsocks_uri()", script)
         self.assertIn("ss://", script)
+
+    def test_tls_ws_grpc_protocols_render_configs_and_links(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("render_vmess_ws_tls_config()", script)
+        self.assertIn("render_vmess_grpc_tls_config()", script)
+        self.assertIn("render_vless_grpc_tls_config()", script)
+        self.assertIn("render_trojan_ws_tls_config()", script)
+        self.assertIn("render_trojan_grpc_tls_config()", script)
+        self.assertIn('"network": "grpc"', script)
+        self.assertIn('"grpcSettings"', script)
+        self.assertIn('"serviceName": "${service_name}"', script)
+        self.assertIn('"security": "tls"', script)
+        self.assertIn("build_vless_grpc_tls_uri()", script)
+        self.assertIn("build_trojan_ws_tls_uri()", script)
+        self.assertIn("build_trojan_grpc_tls_uri()", script)
+        self.assertIn("serviceName=%s", script)
+        self.assertIn('\\"tls\\":\\"${tls}\\"', script)
+        self.assertIn("'grpc'", script)
+        self.assertIn("'tls'", script)
 
     def test_port_conflict_prompt_is_not_caddy_specific(self) -> None:
         script = read_install_script()
