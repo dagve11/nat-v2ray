@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.4.0"
+VERSION="0.5.0"
 PROJECT_NAME="nat-v2ray"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HY2_CONFIG_DIR="/etc/hysteria"
@@ -82,6 +82,18 @@ validate_port() {
   [ "${port}" -ge 1 ] && [ "${port}" -le 65535 ]
 }
 
+validate_port_range() {
+  local port_range="$1"
+  local start_port
+  local end_port
+  if ! [[ "${port_range}" =~ ^[0-9]+-[0-9]+$ ]]; then
+    return 1
+  fi
+  start_port="${port_range%-*}"
+  end_port="${port_range#*-}"
+  validate_port "${start_port}" && validate_port "${end_port}" && [ "${start_port}" -le "${end_port}" ]
+}
+
 prompt_port() {
   local message="$1"
   local default_port="$2"
@@ -94,6 +106,88 @@ prompt_port() {
     fi
     yellow "端口必须是 1-65535 的数字" >&2
   done
+}
+
+prompt_port_range() {
+  local message="$1"
+  local default_range="$2"
+  local port_range
+  while true; do
+    port_range="$(prompt_value "${message}" "${default_range}")"
+    if validate_port_range "${port_range}"; then
+      printf '%s\n' "${port_range}"
+      return 0
+    fi
+    yellow "端口范围必须形如 20000-20010，且起始端口不能大于结束端口" >&2
+  done
+}
+
+validate_kcp_header_type() {
+  local header_type="$1"
+  header_type="$(printf '%s' "${header_type}" | tr '[:upper:]' '[:lower:]')"
+  case "${header_type}" in
+    none|dns|dtls|srtp|utp|wechat|wireguard) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prompt_kcp_header_type() {
+  local message="$1"
+  local default_type="$2"
+  local header_type
+  while true; do
+    header_type="$(prompt_value "${message}" "${default_type}")"
+    header_type="$(printf '%s' "${header_type}" | tr '[:upper:]' '[:lower:]')"
+    if validate_kcp_header_type "${header_type}"; then
+      printf '%s\n' "${header_type}"
+      return 0
+    fi
+    yellow "mKCP header type 只能是 none、dns、dtls、srtp、utp、wechat、wireguard" >&2
+  done
+}
+
+normalise_kcp_header_type() {
+  local header_type="$1"
+  header_type="$(printf '%s' "${header_type}" | tr '[:upper:]' '[:lower:]')"
+  if [ "${header_type}" = "none" ]; then
+    printf '\n'
+  else
+    printf '%s\n' "${header_type}"
+  fi
+}
+
+render_kcp_finalmask_udp() {
+  local header_type="$1"
+  local seed="$2"
+  local finalmask_header
+  finalmask_header="$(normalise_kcp_header_type "${header_type}")"
+
+  if [ -n "${finalmask_header}" ]; then
+    cat <<EOF
+            {
+              "type": "header-${finalmask_header}",
+              "settings": {}
+            },
+EOF
+  fi
+
+  if [ -n "${seed}" ]; then
+    cat <<EOF
+            {
+              "type": "mkcp-aes128gcm",
+              "settings": {
+                "password": "${seed}"
+              }
+            }
+EOF
+  else
+    cat <<EOF
+            {
+              "type": "mkcp-original",
+              "settings": {}
+            }
+EOF
+  fi
 }
 
 random_hex() {
@@ -1308,19 +1402,133 @@ build_vmess_link() {
   local host_header="$7"
   local tls="${8:-}"
   local type="none"
+  local link_host="${host_header}"
   local json
 
   if [ "${network}" = "grpc" ]; then
     type="gun"
   fi
+  if [ "${network}" = "kcp" ]; then
+    type="${host_header:-none}"
+    link_host=""
+  fi
 
-  if [ "${network}" = "ws" ] || [ "${network}" = "grpc" ]; then
-    json="{\"v\":\"2\",\"ps\":\"${name}\",\"add\":\"${host}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"${network}\",\"type\":\"${type}\",\"host\":\"${host_header}\",\"path\":\"${ws_path}\",\"tls\":\"${tls}\"}"
+  if [ "${network}" = "ws" ] || [ "${network}" = "grpc" ] || [ "${network}" = "kcp" ]; then
+    json="{\"v\":\"2\",\"ps\":\"${name}\",\"add\":\"${host}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"${network}\",\"type\":\"${type}\",\"host\":\"${link_host}\",\"path\":\"${ws_path}\",\"tls\":\"${tls}\"}"
   else
     json="{\"v\":\"2\",\"ps\":\"${name}\",\"add\":\"${host}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"tcp\",\"type\":\"none\",\"host\":\"\",\"path\":\"\",\"tls\":\"\"}"
   fi
 
   printf 'vmess://%s\n' "$(printf '%s' "${json}" | base64_no_wrap)"
+}
+
+render_vmess_mkcp_config() {
+  local port="$1"
+  local uuid="$2"
+  local header_type="$3"
+  local seed="$4"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vmess-mkcp",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "alterId": 0
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "kcp",
+        "security": "none",
+        "kcpSettings": {
+          "mtu": 1350,
+          "tti": 50,
+          "uplinkCapacity": 5,
+          "downlinkCapacity": 20
+        },
+        "finalmask": {
+          "udp": [
+$(render_kcp_finalmask_udp "${header_type}" "${seed}")
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_vmess_mkcp_dynamic_config() {
+  local port_range="$1"
+  local uuid="$2"
+  local header_type="$3"
+  local seed="$4"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vmess-mkcp-dynamic",
+      "listen": "0.0.0.0",
+      "port": "${port_range}",
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "alterId": 0
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "kcp",
+        "security": "none",
+        "kcpSettings": {
+          "mtu": 1350,
+          "tti": 50,
+          "uplinkCapacity": 5,
+          "downlinkCapacity": 20
+        },
+        "finalmask": {
+          "udp": [
+$(render_kcp_finalmask_udp "${header_type}" "${seed}")
+          ]
+        }
+      },
+      "allocate": {
+        "strategy": "random",
+        "refresh": 5,
+        "concurrency": 3
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
 }
 
 render_shadowsocks_config() {
@@ -1622,6 +1830,130 @@ EOF
   echo
   echo "分享链接："
   echo "${uri}"
+}
+
+vmess_mkcp_install() {
+  local detected_ip
+  local server_host
+  local port
+  local uuid
+  local header_type
+  local seed
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 VMess mKCP UDP 端口，必须在 NAT 面板转发 UDP' '10089')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+  header_type="$(prompt_kcp_header_type '请输入 mKCP header type' 'none')"
+  seed="$(prompt_value '请输入 mKCP seed，留空使用随机值' "$(random_hex 8)")"
+
+  yellow "VMess mKCP 走 UDP。请确认 NAT 面板已转发 UDP ${port} 到本机，不是 TCP。"
+  if ! prompt_yes_no '确认继续安装 VMess mKCP' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vmess_mkcp_config "${port}" "${uuid}" "${header_type}" "${seed}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vmess-mkcp
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+KCP_HEADER_TYPE=${header_type}
+KCP_SEED=${seed}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vmess_link "VMess-mKCP-${server_host}" "${server_host}" "${port}" "${uuid}" 'kcp' "${seed}" "${header_type}")"
+
+  echo
+  green "VMess mKCP 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lunp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+  echo
+  yellow "如果客户端连不上，优先检查 NAT 面板是否转发 UDP ${port}。"
+}
+
+vmess_mkcp_dynamic_install() {
+  local detected_ip
+  local server_host
+  local port_range
+  local uuid
+  local header_type
+  local seed
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port_range="$(prompt_port_range '请输入 VMess mKCP UDP 端口范围，必须在 NAT 面板转发整个 UDP 端口范围' '20000-20010')"
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+  header_type="$(prompt_kcp_header_type '请输入 mKCP header type' 'none')"
+  seed="$(prompt_value '请输入 mKCP seed，留空使用随机值' "$(random_hex 8)")"
+
+  yellow "VMess mKCP dynamic port 会在 UDP 端口范围 ${port_range} 中随机监听。NAT 面板必须转发整个 UDP 端口范围。"
+  if ! prompt_yes_no '确认继续安装 VMess mKCP dynamic port' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vmess_mkcp_dynamic_config "${port_range}" "${uuid}" "${header_type}" "${seed}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vmess-mkcp-dynamic
+XRAY_HOST=${server_host}
+XRAY_PORT_RANGE=${port_range}
+XRAY_UUID=${uuid}
+KCP_HEADER_TYPE=${header_type}
+KCP_SEED=${seed}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vmess_link "VMess-mKCP-dynamic-${server_host}" "${server_host}" "${port_range}" "${uuid}" 'kcp' "${seed}" "${header_type}")"
+
+  echo
+  green "VMess mKCP dynamic port 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+  echo
+  yellow "如果客户端连不上，优先检查 NAT 面板是否转发整个 UDP 端口范围 ${port_range}。"
 }
 
 shadowsocks_install() {
@@ -2056,7 +2388,9 @@ show_menu() {
   10) VLESS gRPC TLS - TCP，TLS 使用 TXT 检测
   11) Trojan WS TLS - TCP，TLS 使用 TXT 检测
   12) Trojan gRPC TLS - TCP，TLS 使用 TXT 检测
-  13) TLS TXT 检测工具
+  13) VMess mKCP - UDP，不带 TLS
+  14) VMess mKCP dynamic port - UDP 端口范围
+  15) TLS TXT 检测工具
   0) 退出
 EOF
 }
@@ -2082,7 +2416,9 @@ main() {
       10) vless_grpc_tls_install ;;
       11) trojan_ws_tls_install ;;
       12) trojan_grpc_tls_install ;;
-      13) txt_check_tool ;;
+      13) vmess_mkcp_install ;;
+      14) vmess_mkcp_dynamic_install ;;
+      15) txt_check_tool ;;
       0) exit 0 ;;
       *) yellow "无效选项" ;;
     esac

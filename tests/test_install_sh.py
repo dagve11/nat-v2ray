@@ -54,6 +54,9 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("10) VLESS gRPC TLS", script)
         self.assertIn("11) Trojan WS TLS", script)
         self.assertIn("12) Trojan gRPC TLS", script)
+        self.assertIn("13) VMess mKCP", script)
+        self.assertIn("14) VMess mKCP dynamic port", script)
+        self.assertIn("15) TLS TXT", script)
         self.assertIn("TXT", script)
 
     def test_reality_supports_xray_config_and_share_uri(self) -> None:
@@ -100,6 +103,29 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('\\"net\\":\\"tcp\\"', script)
         self.assertIn('\\"net\\":\\"${network}\\"', script)
         self.assertIn("'ws'", script)
+
+    def test_vmess_mkcp_protocols_render_configs_and_links(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("validate_port_range()", script)
+        self.assertIn("prompt_port_range()", script)
+        self.assertIn("render_vmess_mkcp_config()", script)
+        self.assertIn("render_vmess_mkcp_dynamic_config()", script)
+        self.assertIn("normalise_kcp_header_type()", script)
+        self.assertIn("render_kcp_finalmask_udp()", script)
+        self.assertIn('"network": "kcp"', script)
+        self.assertIn('"kcpSettings"', script)
+        self.assertIn('"finalmask"', script)
+        self.assertIn('"type": "header-${finalmask_header}"', script)
+        self.assertIn('"type": "mkcp-aes128gcm"', script)
+        self.assertIn('"password": "${seed}"', script)
+        self.assertIn('"type": "mkcp-original"', script)
+        self.assertNotIn("mkcp-legacy", script)
+        self.assertNotIn('"seed": "${seed}"', script)
+        self.assertIn('"allocate"', script)
+        self.assertIn('"strategy": "random"', script)
+        self.assertIn("'kcp'", script)
+        self.assertIn("UDP 端口范围", script)
 
     def test_shadowsocks_renders_xray_config_and_ss_uri(self) -> None:
         script = read_install_script()
