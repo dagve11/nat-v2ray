@@ -43,10 +43,37 @@ class InstallScriptTests(unittest.TestCase):
         script = read_install_script()
 
         self.assertIn("1) Hysteria2", script)
-        self.assertIn("2) Reality", script)
+        self.assertIn("2) VLESS Reality", script)
         self.assertIn("3) VLESS WS TLS", script)
         self.assertIn("4) Trojan TLS", script)
         self.assertIn("TXT", script)
+
+    def test_reality_supports_xray_config_and_share_uri(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("install_xray_binary()", script)
+        self.assertIn("render_reality_config()", script)
+        self.assertIn('"security": "reality"', script)
+        self.assertIn('"flow": "xtls-rprx-vision"', script)
+        self.assertIn("build_reality_uri()", script)
+        self.assertIn("pbk=%s", script)
+        self.assertIn("sid=%s", script)
+        self.assertIn('"${encoded_public_key}"', script)
+        self.assertIn('"${encoded_short_id}"', script)
+        self.assertIn("/PrivateKey:/", script)
+        self.assertIn("/Password \\(PublicKey\\):/", script)
+
+    def test_tls_protocols_use_manual_txt_certificate_flow(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("install_acme_sh()", script)
+        self.assertIn("request_tls_cert_manual_dns()", script)
+        self.assertIn("--yes-I-know-dns-manual-mode-enough-go-ahead-please", script)
+        self.assertIn("wait_for_txt_record", script)
+        self.assertIn("render_vless_ws_tls_config()", script)
+        self.assertIn("render_trojan_tls_config()", script)
+        self.assertIn("build_vless_ws_tls_uri()", script)
+        self.assertIn("build_trojan_tls_uri()", script)
 
 
 if __name__ == "__main__":

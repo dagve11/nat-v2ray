@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 PROJECT_NAME="nat-v2ray"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HY2_CONFIG_DIR="/etc/hysteria"
@@ -10,6 +10,13 @@ HY2_ENV_FILE="${HY2_CONFIG_DIR}/nat-v2ray-hy2.env"
 HY2_CERT_FILE="${HY2_CONFIG_DIR}/server.crt"
 HY2_KEY_FILE="${HY2_CONFIG_DIR}/server.key"
 HY2_SERVICE_FILE="/etc/systemd/system/hysteria-server.service"
+XRAY_BIN="/usr/local/bin/xray"
+XRAY_CONFIG_DIR="/usr/local/etc/xray"
+XRAY_CONFIG_FILE="${XRAY_CONFIG_DIR}/config.json"
+XRAY_ENV_FILE="${XRAY_CONFIG_DIR}/nat-v2ray.env"
+XRAY_SERVICE_FILE="/etc/systemd/system/xray.service"
+CERT_BASE_DIR="/etc/nat-v2ray/certs"
+ACME_SH="${HOME}/.acme.sh/acme.sh"
 
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -140,7 +147,7 @@ install_base_packages() {
 
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y curl openssl ca-certificates iproute2 dnsutils
+  apt-get install -y curl openssl ca-certificates iproute2 dnsutils unzip
 }
 
 hysteria_asset_name() {
@@ -163,6 +170,168 @@ install_hysteria_binary() {
   blue "下载 Hysteria2：${url}"
   curl -fL --retry 3 --connect-timeout 20 -o "/tmp/${asset}" "${url}"
   install -m 0755 "/tmp/${asset}" "${HYSTERIA_BIN}"
+}
+
+xray_asset_name() {
+  local arch
+  arch="$(uname -m)"
+  case "${arch}" in
+    x86_64|amd64) printf 'Xray-linux-64.zip\n' ;;
+    aarch64|arm64) printf 'Xray-linux-arm64-v8a.zip\n' ;;
+    armv7l) printf 'Xray-linux-arm32-v7a.zip\n' ;;
+    *) die "暂不支持当前架构：${arch}" ;;
+  esac
+}
+
+install_xray_binary() {
+  local asset
+  local url
+  local work_dir
+  asset="$(xray_asset_name)"
+  url="https://github.com/XTLS/Xray-core/releases/latest/download/${asset}"
+  work_dir="/tmp/nat-v2ray-xray"
+
+  blue "下载 Xray：${url}"
+  rm -rf "${work_dir}"
+  mkdir -p "${work_dir}"
+  curl -fL --retry 3 --connect-timeout 20 -o "/tmp/${asset}" "${url}"
+  unzip -oq "/tmp/${asset}" -d "${work_dir}"
+  install -m 0755 "${work_dir}/xray" "${XRAY_BIN}"
+  if [ -f "${work_dir}/geoip.dat" ]; then
+    install -m 0644 "${work_dir}/geoip.dat" "/usr/local/share/xray/geoip.dat" 2>/dev/null || true
+  fi
+  if [ -f "${work_dir}/geosite.dat" ]; then
+    install -m 0644 "${work_dir}/geosite.dat" "/usr/local/share/xray/geosite.dat" 2>/dev/null || true
+  fi
+}
+
+write_xray_service() {
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  cat > "${XRAY_SERVICE_FILE}" <<EOF
+[Unit]
+Description=Xray Service
+Documentation=https://github.com/XTLS/Xray-core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${XRAY_BIN} run -config ${XRAY_CONFIG_FILE}
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+random_uuid() {
+  if [ -r /proc/sys/kernel/random/uuid ]; then
+    cat /proc/sys/kernel/random/uuid
+  elif command -v uuidgen >/dev/null 2>&1; then
+    uuidgen
+  else
+    "${XRAY_BIN}" uuid
+  fi
+}
+
+generate_reality_keys() {
+  local output
+  local private_key
+  local public_key
+  output="$("${XRAY_BIN}" x25519)"
+  private_key="$(printf '%s\n' "${output}" | awk -F': ' '/Private key:/ {print $2} /PrivateKey:/ {print $2}' | tail -1)"
+  public_key="$(printf '%s\n' "${output}" | awk -F': ' '/Public key:/ {print $2} /Password \(PublicKey\):/ {print $2}' | tail -1)"
+  if [ -z "${private_key}" ] || [ -z "${public_key}" ]; then
+    die "生成 Reality 密钥失败：${output}"
+  fi
+  printf '%s %s\n' "${private_key}" "${public_key}"
+}
+
+render_reality_config() {
+  local port="$1"
+  local uuid="$2"
+  local private_key="$3"
+  local short_id="$4"
+  local server_name="$5"
+  local dest="$6"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-reality",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${dest}",
+          "xver": 0,
+          "serverNames": [
+            "${server_name}"
+          ],
+          "privateKey": "${private_key}",
+          "shortIds": [
+            "${short_id}"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "tag": "blocked"
+    }
+  ]
+}
+EOF
+}
+
+build_reality_uri() {
+  local host="$1"
+  local port="$2"
+  local uuid="$3"
+  local server_name="$4"
+  local public_key="$5"
+  local short_id="$6"
+  local encoded_server_name
+  local encoded_public_key
+  local encoded_short_id
+  encoded_server_name="$(urlencode "${server_name}")"
+  encoded_public_key="$(urlencode "${public_key}")"
+  encoded_short_id="$(urlencode "${short_id}")"
+  printf 'vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&headerType=none#Reality-%s\n' \
+    "${uuid}" "${host}" "${port}" "${encoded_server_name}" "${encoded_public_key}" "${encoded_short_id}" "${host}"
 }
 
 port_is_used() {
@@ -397,6 +566,80 @@ EOF
   yellow "如果客户端连不上，优先检查 NAT 面板是否转发 UDP ${port}，不是 TCP。"
 }
 
+reality_install() {
+  local detected_ip
+  local server_host
+  local port
+  local uuid
+  local server_name
+  local dest
+  local short_id
+  local keys
+  local private_key
+  local public_key
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 Reality TCP 端口，必须在 NAT 面板转发 TCP' '443')"
+  ensure_port_available port
+  server_name="$(prompt_value '请输入 Reality 伪装 SNI' 'www.cloudflare.com')"
+  dest="$(prompt_value '请输入 Reality 伪装目标 host:port' "${server_name}:443")"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  short_id="$(prompt_value '请输入 Reality shortId，留空使用随机值' "$(random_hex 4)")"
+
+  yellow "请确认 NAT 面板已转发 TCP ${port} 到本机。Reality 不需要申请 TLS 证书。"
+  if ! prompt_yes_no '确认继续安装 Reality' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  keys="$(generate_reality_keys)"
+  private_key="${keys%% *}"
+  public_key="${keys##* }"
+
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_reality_config "${port}" "${uuid}" "${private_key}" "${short_id}" "${server_name}" "${dest}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=reality
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+REALITY_SNI=${server_name}
+REALITY_DEST=${dest}
+REALITY_PRIVATE_KEY=${private_key}
+REALITY_PUBLIC_KEY=${public_key}
+REALITY_SHORT_ID=${short_id}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_reality_uri "${server_host}" "${port}" "${uuid}" "${server_name}" "${public_key}" "${short_id}")"
+
+  echo
+  green "Reality 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
 tls_txt_record_name() {
   local domain="$1"
   printf '_acme-challenge.%s\n' "${domain}"
@@ -440,6 +683,365 @@ wait_for_txt_record() {
   done
 }
 
+install_acme_sh() {
+  if [ -x "${ACME_SH}" ]; then
+    return 0
+  fi
+
+  blue "安装 acme.sh"
+  curl -fsSL https://get.acme.sh | sh -s email="$(prompt_value '请输入证书通知邮箱' 'admin@example.com')"
+  if [ ! -x "${ACME_SH}" ]; then
+    die "acme.sh 安装失败"
+  fi
+  "${ACME_SH}" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
+}
+
+cert_dir_for_domain() {
+  local domain="$1"
+  printf '%s/%s\n' "${CERT_BASE_DIR}" "${domain}"
+}
+
+extract_acme_txt_value() {
+  sed -n \
+    -e "s/.*TXT value:[[:space:]]*'\\([^']*\\)'.*/\\1/p" \
+    -e 's/.*TXT value:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    -e 's/.*TXT value:[[:space:]]*\([^[:space:]]*\).*/\1/p' | tail -1
+}
+
+request_tls_cert_manual_dns() {
+  local domain="$1"
+  local cert_dir
+  local key_file
+  local fullchain_file
+  local issue_output
+  local renew_output
+  local txt_value
+  local rc
+
+  require_root
+  install_base_packages
+  install_acme_sh
+
+  cert_dir="$(cert_dir_for_domain "${domain}")"
+  key_file="${cert_dir}/private.key"
+  fullchain_file="${cert_dir}/fullchain.cer"
+  mkdir -p "${cert_dir}"
+  chmod 700 "${cert_dir}"
+
+  if [ -s "${key_file}" ] && [ -s "${fullchain_file}" ]; then
+    if prompt_yes_no "检测到 ${domain} 已有证书，是否直接复用" 'y'; then
+      printf '%s %s\n' "${fullchain_file}" "${key_file}"
+      return 0
+    fi
+  fi
+
+  set +e
+  issue_output="$("${ACME_SH}" --issue --dns -d "${domain}" --yes-I-know-dns-manual-mode-enough-go-ahead-please 2>&1)"
+  rc=$?
+  set -e
+  printf '%s\n' "${issue_output}"
+
+  txt_value="$(printf '%s\n' "${issue_output}" | extract_acme_txt_value)"
+  if [ -z "${txt_value}" ]; then
+    yellow "未能自动解析 acme.sh 输出里的 TXT 值。"
+    txt_value="$(prompt_value '请手动粘贴 acme.sh 要求的 TXT 值' '')"
+  fi
+  if [ -z "${txt_value}" ]; then
+    die "没有 TXT 值，无法继续申请证书"
+  fi
+
+  wait_for_txt_record "${domain}" "${txt_value}" || die "TXT 验证未通过"
+
+  set +e
+  renew_output="$("${ACME_SH}" --renew -d "${domain}" --yes-I-know-dns-manual-mode-enough-go-ahead-please --force 2>&1)"
+  rc=$?
+  set -e
+  printf '%s\n' "${renew_output}"
+  if [ "${rc}" -ne 0 ]; then
+    die "证书签发失败，请检查 DNS TXT 是否已生效"
+  fi
+
+  "${ACME_SH}" --install-cert -d "${domain}" \
+    --key-file "${key_file}" \
+    --fullchain-file "${fullchain_file}" \
+    --reloadcmd "systemctl restart xray >/dev/null 2>&1 || true"
+
+  chmod 600 "${key_file}"
+  chmod 644 "${fullchain_file}"
+  printf '%s %s\n' "${fullchain_file}" "${key_file}"
+}
+
+render_vless_ws_tls_config() {
+  local port="$1"
+  local uuid="$2"
+  local ws_path="$3"
+  local cert_file="$4"
+  local key_file="$5"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-ws-tls",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "${cert_file}",
+              "keyFile": "${key_file}"
+            }
+          ]
+        },
+        "wsSettings": {
+          "path": "${ws_path}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_trojan_tls_config() {
+  local port="$1"
+  local password="$2"
+  local cert_file="$3"
+  local key_file="$4"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "trojan-tls",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "trojan",
+      "settings": {
+        "clients": [
+          {
+            "password": "${password}"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "${cert_file}",
+              "keyFile": "${key_file}"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+build_vless_ws_tls_uri() {
+  local host="$1"
+  local port="$2"
+  local uuid="$3"
+  local domain="$4"
+  local ws_path="$5"
+  local encoded_domain
+  local encoded_path
+  encoded_domain="$(urlencode "${domain}")"
+  encoded_path="$(urlencode "${ws_path}")"
+  printf 'vless://%s@%s:%s?encryption=none&security=tls&type=ws&host=%s&sni=%s&path=%s#VLESS-WS-TLS-%s\n' \
+    "${uuid}" "${host}" "${port}" "${encoded_domain}" "${encoded_domain}" "${encoded_path}" "${host}"
+}
+
+build_trojan_tls_uri() {
+  local host="$1"
+  local port="$2"
+  local password="$3"
+  local domain="$4"
+  local encoded_password
+  local encoded_domain
+  encoded_password="$(urlencode "${password}")"
+  encoded_domain="$(urlencode "${domain}")"
+  printf 'trojan://%s@%s:%s?security=tls&type=tcp&sni=%s#Trojan-TLS-%s\n' \
+    "${encoded_password}" "${host}" "${port}" "${encoded_domain}" "${host}"
+}
+
+normalize_ws_path() {
+  local path="$1"
+  if [[ "${path}" != /* ]]; then
+    path="/${path}"
+  fi
+  printf '%s\n' "${path}"
+}
+
+vless_ws_tls_install() {
+  local detected_ip
+  local server_host
+  local domain
+  local port
+  local uuid
+  local ws_path
+  local cert_dir
+  local cert_file
+  local key_file
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  domain="$(prompt_value '请输入用于 TLS 证书的域名' "${server_host}")"
+  port="$(prompt_port '请输入 VLESS WS TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
+
+  yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
+  if ! prompt_yes_no '确认继续安装 VLESS WS TLS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  request_tls_cert_manual_dns "${domain}"
+  cert_dir="$(cert_dir_for_domain "${domain}")"
+  cert_file="${cert_dir}/fullchain.cer"
+  key_file="${cert_dir}/private.key"
+
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vless_ws_tls_config "${port}" "${uuid}" "${ws_path}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vless-ws-tls
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+TLS_DOMAIN=${domain}
+WS_PATH=${ws_path}
+TLS_CERT=${cert_file}
+TLS_KEY=${key_file}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vless_ws_tls_uri "${server_host}" "${port}" "${uuid}" "${domain}" "${ws_path}")"
+
+  echo
+  green "VLESS WS TLS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+trojan_tls_install() {
+  local detected_ip
+  local server_host
+  local domain
+  local port
+  local password
+  local cert_dir
+  local cert_file
+  local key_file
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  domain="$(prompt_value '请输入用于 TLS 证书的域名' "${server_host}")"
+  port="$(prompt_port '请输入 Trojan TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')"
+  ensure_port_available port
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
+
+  yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
+  if ! prompt_yes_no '确认继续安装 Trojan TLS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  request_tls_cert_manual_dns "${domain}"
+  cert_dir="$(cert_dir_for_domain "${domain}")"
+  cert_file="${cert_dir}/fullchain.cer"
+  key_file="${cert_dir}/private.key"
+
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_trojan_tls_config "${port}" "${password}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=trojan-tls
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+TROJAN_PASSWORD=${password}
+TLS_DOMAIN=${domain}
+TLS_CERT=${cert_file}
+TLS_KEY=${key_file}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_trojan_tls_uri "${server_host}" "${port}" "${password}" "${domain}")"
+
+  echo
+  green "Trojan TLS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
 txt_check_tool() {
   local domain
   local expected
@@ -465,9 +1067,9 @@ show_menu() {
 
 请选择要安装或配置的协议：
   1) Hysteria2 (HY2) - 推荐 NAT 机优先使用，UDP
-  2) Reality - 规划中
-  3) VLESS WS TLS - 规划中，TLS 将使用 TXT 检测
-  4) Trojan TLS - 规划中，TLS 将使用 TXT 检测
+  2) VLESS Reality - TCP，不需要 TLS 证书
+  3) VLESS WS TLS - TCP，TLS 使用 TXT 检测
+  4) Trojan TLS - TCP，TLS 使用 TXT 检测
   5) TLS TXT 检测工具
   0) 退出
 EOF
@@ -483,9 +1085,9 @@ main() {
     choice="${choice:-1}"
     case "${choice}" in
       1) hy2_install ;;
-      2) coming_soon 'Reality' ;;
-      3) coming_soon 'VLESS WS TLS' ;;
-      4) coming_soon 'Trojan TLS' ;;
+      2) reality_install ;;
+      3) vless_ws_tls_install ;;
+      4) trojan_tls_install ;;
       5) txt_check_tool ;;
       0) exit 0 ;;
       *) yellow "无效选项" ;;
