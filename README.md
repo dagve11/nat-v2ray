@@ -26,6 +26,14 @@ curl -fsSL -o install.sh https://raw.githubusercontent.com/dagve11/nat-v2ray/mai
 bash install.sh
 ```
 
+如果服务器无法访问 `raw.githubusercontent.com`，可以用 GitHub SSH/HTTPS 克隆后执行：
+
+```bash
+git clone https://github.com/dagve11/nat-v2ray.git
+cd nat-v2ray
+bash install.sh
+```
+
 ## HY2 注意事项
 
 HY2 使用 QUIC/UDP。NAT 面板必须把外部端口的 `UDP` 转发到本机端口。
