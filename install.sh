@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.8.0"
+VERSION="0.9.0"
 PROJECT_NAME="nat-v2ray"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HY2_CONFIG_DIR="/etc/hysteria"
@@ -873,6 +873,55 @@ request_tls_cert_manual_dns() {
   printf '%s %s\n' "${fullchain_file}" "${key_file}"
 }
 
+render_vless_tcp_tls_config() {
+  local port="$1"
+  local uuid="$2"
+  local cert_file="$3"
+  local key_file="$4"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-tcp-tls",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "${cert_file}",
+              "keyFile": "${key_file}"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
 render_vless_ws_tls_config() {
   local port="$1"
   local uuid="$2"
@@ -974,6 +1023,17 @@ render_trojan_tls_config() {
 EOF
 }
 
+build_vless_tcp_tls_uri() {
+  local host="$1"
+  local port="$2"
+  local uuid="$3"
+  local domain="$4"
+  local encoded_domain
+  encoded_domain="$(urlencode "${domain}")"
+  printf 'vless://%s@%s:%s?encryption=none&security=tls&type=tcp&sni=%s#VLESS-TCP-TLS-%s\n' \
+    "${uuid}" "${host}" "${port}" "${encoded_domain}" "${host}"
+}
+
 build_vless_ws_tls_uri() {
   local host="$1"
   local port="$2"
@@ -1045,6 +1105,67 @@ build_trojan_grpc_tls_uri() {
   encoded_service_name="$(urlencode "${service_name}")"
   printf 'trojan://%s@%s:%s?security=tls&type=grpc&serviceName=%s&mode=gun&sni=%s#Trojan-gRPC-TLS-%s\n' \
     "${encoded_password}" "${host}" "${port}" "${encoded_service_name}" "${encoded_domain}" "${host}"
+}
+
+render_vmess_tcp_tls_config() {
+  local port="$1"
+  local uuid="$2"
+  local cert_file="$3"
+  local key_file="$4"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vmess-tcp-tls",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "alterId": 0
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "${cert_file}",
+              "keyFile": "${key_file}"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+build_vmess_tcp_tls_link() {
+  local name="$1"
+  local host="$2"
+  local port="$3"
+  local uuid="$4"
+  local domain="$5"
+  local json
+
+  json="{\"v\":\"2\",\"ps\":\"${name}\",\"add\":\"${host}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"tcp\",\"type\":\"none\",\"host\":\"${domain}\",\"path\":\"\",\"tls\":\"tls\",\"sni\":\"${domain}\"}"
+  printf 'vmess://%s\n' "$(printf '%s' "${json}" | base64_no_wrap)"
 }
 
 render_vmess_ws_tls_config() {
@@ -2349,6 +2470,72 @@ EOF
   yellow "如果客户端连不上，优先检查 NAT 面板是否转发整个 UDP 端口范围 ${port_range}。"
 }
 
+vless_tcp_tls_install() {
+  local detected_ip
+  local server_host
+  local domain
+  local port
+  local uuid
+  local cert_dir
+  local cert_file
+  local key_file
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  port="$(prompt_port '请输入 VLESS TCP TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+
+  yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
+  if ! prompt_yes_no '确认继续安装 VLESS TCP TLS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  request_tls_cert_manual_dns "${domain}"
+  cert_dir="$(cert_dir_for_domain "${domain}")"
+  cert_file="${cert_dir}/fullchain.cer"
+  key_file="${cert_dir}/private.key"
+
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vless_tcp_tls_config "${port}" "${uuid}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vless-tcp-tls
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+TLS_DOMAIN=${domain}
+TLS_CERT=${cert_file}
+TLS_KEY=${key_file}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vless_tcp_tls_uri "${server_host}" "${port}" "${uuid}" "${domain}")"
+
+  echo
+  green "VLESS TCP TLS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
 vless_ws_tls_install() {
   local detected_ip
   local server_host
@@ -2890,6 +3077,72 @@ EOF
   echo "${uri}"
 }
 
+vmess_tcp_tls_install() {
+  local detected_ip
+  local server_host
+  local domain
+  local port
+  local uuid
+  local cert_dir
+  local cert_file
+  local key_file
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  port="$(prompt_port '请输入 VMess TCP TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+
+  yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
+  if ! prompt_yes_no '确认继续安装 VMess TCP TLS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  request_tls_cert_manual_dns "${domain}"
+  cert_dir="$(cert_dir_for_domain "${domain}")"
+  cert_file="${cert_dir}/fullchain.cer"
+  key_file="${cert_dir}/private.key"
+
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vmess_tcp_tls_config "${port}" "${uuid}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vmess-tcp-tls
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+TLS_DOMAIN=${domain}
+TLS_CERT=${cert_file}
+TLS_KEY=${key_file}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vmess_tcp_tls_link "VMess-TCP-TLS-${server_host}" "${server_host}" "${port}" "${uuid}" "${domain}")"
+
+  echo
+  green "VMess TCP TLS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
 vmess_ws_tls_install() {
   local detected_ip
   local server_host
@@ -3276,7 +3529,9 @@ show_menu() {
   20) VMess WS dynamic port - TCP 端口范围
   21) VLESS TCP dynamic port - TCP 端口范围
   22) VLESS WS dynamic port - TCP 端口范围
-  23) TLS TXT 检测工具
+  23) VLESS TCP TLS - TCP，TLS 使用 TXT 检测
+  24) VMess TCP TLS - TCP，TLS 使用 TXT 检测
+  25) TLS TXT 检测工具
   0) 退出
 EOF
 }
@@ -3312,7 +3567,9 @@ main() {
       20) vmess_ws_dynamic_install ;;
       21) vless_tcp_dynamic_install ;;
       22) vless_ws_dynamic_install ;;
-      23) txt_check_tool ;;
+      23) vless_tcp_tls_install ;;
+      24) vmess_tcp_tls_install ;;
+      25) txt_check_tool ;;
       0) exit 0 ;;
       *) yellow "无效选项" ;;
     esac

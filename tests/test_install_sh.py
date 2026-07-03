@@ -64,7 +64,9 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("20) VMess WS dynamic port", script)
         self.assertIn("21) VLESS TCP dynamic port", script)
         self.assertIn("22) VLESS WS dynamic port", script)
-        self.assertIn("23) TLS TXT", script)
+        self.assertIn("23) VLESS TCP TLS", script)
+        self.assertIn("24) VMess TCP TLS", script)
+        self.assertIn("25) TLS TXT", script)
         self.assertIn("TXT", script)
 
     def test_reality_supports_xray_config_and_share_uri(self) -> None:
@@ -89,13 +91,17 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("request_tls_cert_manual_dns()", script)
         self.assertIn("--yes-I-know-dns-manual-mode-enough-go-ahead-please", script)
         self.assertIn("wait_for_txt_record", script)
+        self.assertIn("render_vless_tcp_tls_config()", script)
         self.assertIn("render_vless_ws_tls_config()", script)
+        self.assertIn("render_vmess_tcp_tls_config()", script)
         self.assertIn("render_trojan_tls_config()", script)
         self.assertIn("render_vmess_ws_tls_config()", script)
         self.assertIn("render_vmess_grpc_tls_config()", script)
         self.assertIn("render_vless_grpc_tls_config()", script)
         self.assertIn("render_trojan_ws_tls_config()", script)
         self.assertIn("render_trojan_grpc_tls_config()", script)
+        self.assertIn("build_vless_tcp_tls_uri()", script)
+        self.assertIn("build_vmess_tcp_tls_link()", script)
         self.assertIn("build_vless_ws_tls_uri()", script)
         self.assertIn("build_trojan_tls_uri()", script)
 
