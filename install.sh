@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.10.0"
+VERSION="0.11.0"
 PROJECT_NAME="nat-v2ray"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HY2_CONFIG_DIR="/etc/hysteria"
@@ -1048,6 +1048,17 @@ build_vless_ws_tls_uri() {
     "${uuid}" "${host}" "${port}" "${encoded_domain}" "${encoded_domain}" "${encoded_path}" "${host}"
 }
 
+build_vless_grpc_uri() {
+  local host="$1"
+  local port="$2"
+  local uuid="$3"
+  local service_name="$4"
+  local encoded_service_name
+  encoded_service_name="$(urlencode "${service_name}")"
+  printf 'vless://%s@%s:%s?encryption=none&security=none&type=grpc&serviceName=%s&mode=gun#VLESS-gRPC-%s\n' \
+    "${uuid}" "${host}" "${port}" "${encoded_service_name}" "${host}"
+}
+
 build_trojan_tls_uri() {
   local host="$1"
   local port="$2"
@@ -1558,6 +1569,49 @@ render_vless_httpupgrade_config() {
 EOF
 }
 
+render_vless_grpc_config() {
+  local port="$1"
+  local uuid="$2"
+  local service_name="$3"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-grpc",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "grpc",
+        "security": "none",
+        "grpcSettings": {
+          "serviceName": "${service_name}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
 render_vless_tcp_dynamic_config() {
   local port_range="$1"
   local uuid="$2"
@@ -1905,6 +1959,49 @@ render_vmess_httpupgrade_config() {
         "httpupgradeSettings": {
           "path": "${http_path}",
           "host": "${host_header}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_vmess_grpc_config() {
+  local port="$1"
+  local uuid="$2"
+  local service_name="$3"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vmess-grpc",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "alterId": 0
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "grpc",
+        "security": "none",
+        "grpcSettings": {
+          "serviceName": "${service_name}"
         }
       }
     }
@@ -2375,6 +2472,65 @@ EOF
 
   echo
   green "VLESS HTTPUpgrade 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+vless_grpc_install() {
+  local detected_ip
+  local server_host
+  local port
+  local uuid
+  local service_name
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 VLESS gRPC TCP 端口，必须在 NAT 面板转发 TCP' '10095')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  service_name="$(prompt_value '请输入 gRPC serviceName' "$(random_hex 8)")"
+
+  yellow "VLESS gRPC 当前不带 TLS；如需证书保护，请使用 VLESS gRPC TLS。"
+  if ! prompt_yes_no '确认继续安装 VLESS gRPC' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vless_grpc_config "${port}" "${uuid}" "${service_name}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vless-grpc
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+GRPC_SERVICE_NAME=${service_name}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vless_grpc_uri "${server_host}" "${port}" "${uuid}" "${service_name}")"
+
+  echo
+  green "VLESS gRPC 安装完成"
   echo "服务状态：$(systemctl is-active xray || true)"
   echo
   echo "监听检查："
@@ -2988,6 +3144,65 @@ EOF
 
   echo
   green "VMess HTTPUpgrade 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+vmess_grpc_install() {
+  local detected_ip
+  local server_host
+  local port
+  local uuid
+  local service_name
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 VMess gRPC TCP 端口，必须在 NAT 面板转发 TCP' '10096')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+  service_name="$(prompt_value '请输入 gRPC serviceName' "$(random_hex 8)")"
+
+  yellow "VMess gRPC 当前不带 TLS；如需证书保护，请使用 VMess gRPC TLS。"
+  if ! prompt_yes_no '确认继续安装 VMess gRPC' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vmess_grpc_config "${port}" "${uuid}" "${service_name}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vmess-grpc
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+GRPC_SERVICE_NAME=${service_name}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vmess_link "VMess-gRPC-${server_host}" "${server_host}" "${port}" "${uuid}" 'grpc' "${service_name}" '')"
+
+  echo
+  green "VMess gRPC 安装完成"
   echo "服务状态：$(systemctl is-active xray || true)"
   echo
   echo "监听检查："
@@ -3747,7 +3962,9 @@ show_menu() {
   24) VMess TCP TLS - TCP，TLS 使用 TXT 检测
   25) VLESS HTTPUpgrade - TCP，不带 TLS
   26) VMess HTTPUpgrade - TCP，不带 TLS
-  27) TLS TXT 检测工具
+  27) VLESS gRPC - TCP，不带 TLS
+  28) VMess gRPC - TCP，不带 TLS
+  29) TLS TXT 检测工具
   0) 退出
 EOF
 }
@@ -3787,7 +4004,9 @@ main() {
       24) vmess_tcp_tls_install ;;
       25) vless_httpupgrade_install ;;
       26) vmess_httpupgrade_install ;;
-      27) txt_check_tool ;;
+      27) vless_grpc_install ;;
+      28) vmess_grpc_install ;;
+      29) txt_check_tool ;;
       0) exit 0 ;;
       *) yellow "无效选项" ;;
     esac

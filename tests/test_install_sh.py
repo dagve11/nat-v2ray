@@ -68,7 +68,9 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("24) VMess TCP TLS", script)
         self.assertIn("25) VLESS HTTPUpgrade", script)
         self.assertIn("26) VMess HTTPUpgrade", script)
-        self.assertIn("27) TLS TXT", script)
+        self.assertIn("27) VLESS gRPC", script)
+        self.assertIn("28) VMess gRPC", script)
+        self.assertIn("29) TLS TXT", script)
         self.assertIn("TXT", script)
 
     def test_reality_supports_xray_config_and_share_uri(self) -> None:
@@ -216,6 +218,22 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('\\"tls\\":\\"${tls}\\"', script)
         self.assertIn("'grpc'", script)
         self.assertIn("'tls'", script)
+
+    def test_plain_grpc_protocols_render_configs_and_links(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("render_vless_grpc_config()", script)
+        self.assertIn("render_vmess_grpc_config()", script)
+        self.assertIn("vless_grpc_install()", script)
+        self.assertIn("vmess_grpc_install()", script)
+        self.assertIn('"network": "grpc"', script)
+        self.assertIn('"security": "none"', script)
+        self.assertIn('"grpcSettings"', script)
+        self.assertIn('"serviceName": "${service_name}"', script)
+        self.assertIn("build_vless_grpc_uri()", script)
+        self.assertIn("security=none&type=grpc", script)
+        self.assertIn("build_vmess_link", script)
+        self.assertIn("'grpc'", script)
 
     def test_port_conflict_prompt_is_not_caddy_specific(self) -> None:
         script = read_install_script()
