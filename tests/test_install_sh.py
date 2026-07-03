@@ -70,7 +70,9 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("26) VMess HTTPUpgrade", script)
         self.assertIn("27) VLESS gRPC", script)
         self.assertIn("28) VMess gRPC", script)
-        self.assertIn("29) TLS TXT", script)
+        self.assertIn("29) VLESS XHTTP", script)
+        self.assertIn("30) VMess XHTTP", script)
+        self.assertIn("31) TLS TXT", script)
         self.assertIn("TXT", script)
 
     def test_reality_supports_xray_config_and_share_uri(self) -> None:
@@ -234,6 +236,21 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("security=none&type=grpc", script)
         self.assertIn("build_vmess_link", script)
         self.assertIn("'grpc'", script)
+
+    def test_xhttp_protocols_render_configs_and_links(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("render_vless_xhttp_config()", script)
+        self.assertIn("render_vmess_xhttp_config()", script)
+        self.assertIn("vless_xhttp_install()", script)
+        self.assertIn("vmess_xhttp_install()", script)
+        self.assertIn('"network": "xhttp"', script)
+        self.assertIn('"xhttpSettings"', script)
+        self.assertIn('"path": "${xhttp_path}"', script)
+        self.assertIn('"mode": "${xhttp_mode}"', script)
+        self.assertIn("build_vless_xhttp_uri()", script)
+        self.assertIn("security=none&type=xhttp", script)
+        self.assertIn("'xhttp'", script)
 
     def test_port_conflict_prompt_is_not_caddy_specific(self) -> None:
         script = read_install_script()

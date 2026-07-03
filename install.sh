@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.11.0"
+VERSION="0.12.0"
 PROJECT_NAME="nat-v2ray"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HY2_CONFIG_DIR="/etc/hysteria"
@@ -1059,6 +1059,20 @@ build_vless_grpc_uri() {
     "${uuid}" "${host}" "${port}" "${encoded_service_name}" "${host}"
 }
 
+build_vless_xhttp_uri() {
+  local host="$1"
+  local port="$2"
+  local uuid="$3"
+  local xhttp_path="$4"
+  local xhttp_mode="$5"
+  local encoded_path
+  local encoded_mode
+  encoded_path="$(urlencode "${xhttp_path}")"
+  encoded_mode="$(urlencode "${xhttp_mode}")"
+  printf 'vless://%s@%s:%s?encryption=none&security=none&type=xhttp&path=%s&mode=%s#VLESS-XHTTP-%s\n' \
+    "${uuid}" "${host}" "${port}" "${encoded_path}" "${encoded_mode}" "${host}"
+}
+
 build_trojan_tls_uri() {
   local host="$1"
   local port="$2"
@@ -1612,6 +1626,51 @@ render_vless_grpc_config() {
 EOF
 }
 
+render_vless_xhttp_config() {
+  local port="$1"
+  local uuid="$2"
+  local xhttp_path="$3"
+  local xhttp_mode="$4"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-xhttp",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "none",
+        "xhttpSettings": {
+          "path": "${xhttp_path}",
+          "mode": "${xhttp_mode}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
 render_vless_tcp_dynamic_config() {
   local port_range="$1"
   local uuid="$2"
@@ -2016,6 +2075,51 @@ render_vmess_grpc_config() {
 EOF
 }
 
+render_vmess_xhttp_config() {
+  local port="$1"
+  local uuid="$2"
+  local xhttp_path="$3"
+  local xhttp_mode="$4"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vmess-xhttp",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "alterId": 0
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "none",
+        "xhttpSettings": {
+          "path": "${xhttp_path}",
+          "mode": "${xhttp_mode}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
 render_vmess_tcp_dynamic_config() {
   local port_range="$1"
   local uuid="$2"
@@ -2124,12 +2228,16 @@ build_vmess_link() {
   if [ "${network}" = "grpc" ]; then
     type="gun"
   fi
+  if [ "${network}" = "xhttp" ]; then
+    type="${host_header:-auto}"
+    link_host=""
+  fi
   if [ "${network}" = "kcp" ]; then
     type="${host_header:-none}"
     link_host=""
   fi
 
-  if [ "${network}" = "ws" ] || [ "${network}" = "grpc" ] || [ "${network}" = "kcp" ] || [ "${network}" = "httpupgrade" ]; then
+  if [ "${network}" = "ws" ] || [ "${network}" = "grpc" ] || [ "${network}" = "kcp" ] || [ "${network}" = "httpupgrade" ] || [ "${network}" = "xhttp" ]; then
     json="{\"v\":\"2\",\"ps\":\"${name}\",\"add\":\"${host}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"${network}\",\"type\":\"${type}\",\"host\":\"${link_host}\",\"path\":\"${ws_path}\",\"tls\":\"${tls}\"}"
   else
     json="{\"v\":\"2\",\"ps\":\"${name}\",\"add\":\"${host}\",\"port\":\"${port}\",\"id\":\"${uuid}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"tcp\",\"type\":\"none\",\"host\":\"\",\"path\":\"\",\"tls\":\"\"}"
@@ -2531,6 +2639,68 @@ EOF
 
   echo
   green "VLESS gRPC 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+vless_xhttp_install() {
+  local detected_ip
+  local server_host
+  local port
+  local uuid
+  local xhttp_path
+  local xhttp_mode
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 VLESS XHTTP TCP 端口，必须在 NAT 面板转发 TCP' '10097')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "/$(random_hex 8)")")"
+  xhttp_mode="$(prompt_value '请输入 XHTTP mode' 'auto')"
+
+  yellow "VLESS XHTTP 当前不带 TLS；如需证书保护，后续可增加 XHTTP TLS。"
+  if ! prompt_yes_no '确认继续安装 VLESS XHTTP' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vless_xhttp_config "${port}" "${uuid}" "${xhttp_path}" "${xhttp_mode}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vless-xhttp
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+XHTTP_PATH=${xhttp_path}
+XHTTP_MODE=${xhttp_mode}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vless_xhttp_uri "${server_host}" "${port}" "${uuid}" "${xhttp_path}" "${xhttp_mode}")"
+
+  echo
+  green "VLESS XHTTP 安装完成"
   echo "服务状态：$(systemctl is-active xray || true)"
   echo
   echo "监听检查："
@@ -3203,6 +3373,68 @@ EOF
 
   echo
   green "VMess gRPC 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+vmess_xhttp_install() {
+  local detected_ip
+  local server_host
+  local port
+  local uuid
+  local xhttp_path
+  local xhttp_mode
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 VMess XHTTP TCP 端口，必须在 NAT 面板转发 TCP' '10098')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "/$(random_hex 8)")")"
+  xhttp_mode="$(prompt_value '请输入 XHTTP mode' 'auto')"
+
+  yellow "VMess XHTTP 当前不带 TLS；公网长期使用建议优先 VLESS/Reality/HY2/TLS。"
+  if ! prompt_yes_no '确认继续安装 VMess XHTTP' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vmess_xhttp_config "${port}" "${uuid}" "${xhttp_path}" "${xhttp_mode}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vmess-xhttp
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+XHTTP_PATH=${xhttp_path}
+XHTTP_MODE=${xhttp_mode}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vmess_link "VMess-XHTTP-${server_host}" "${server_host}" "${port}" "${uuid}" 'xhttp' "${xhttp_path}" "${xhttp_mode}")"
+
+  echo
+  green "VMess XHTTP 安装完成"
   echo "服务状态：$(systemctl is-active xray || true)"
   echo
   echo "监听检查："
@@ -3964,7 +4196,9 @@ show_menu() {
   26) VMess HTTPUpgrade - TCP，不带 TLS
   27) VLESS gRPC - TCP，不带 TLS
   28) VMess gRPC - TCP，不带 TLS
-  29) TLS TXT 检测工具
+  29) VLESS XHTTP - TCP，不带 TLS
+  30) VMess XHTTP - TCP，不带 TLS
+  31) TLS TXT 检测工具
   0) 退出
 EOF
 }
@@ -4006,7 +4240,9 @@ main() {
       26) vmess_httpupgrade_install ;;
       27) vless_grpc_install ;;
       28) vmess_grpc_install ;;
-      29) txt_check_tool ;;
+      29) vless_xhttp_install ;;
+      30) vmess_xhttp_install ;;
+      31) txt_check_tool ;;
       0) exit 0 ;;
       *) yellow "无效选项" ;;
     esac
