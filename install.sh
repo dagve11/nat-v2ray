@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.12.0"
+VERSION="0.13.0"
 PROJECT_NAME="nat-v2ray"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HY2_CONFIG_DIR="/etc/hysteria"
@@ -1023,6 +1023,216 @@ render_trojan_tls_config() {
 EOF
 }
 
+render_trojan_tcp_config() {
+  local port="$1"
+  local password="$2"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "trojan-tcp",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "trojan",
+      "settings": {
+        "clients": [
+          {
+            "password": "${password}"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_trojan_ws_config() {
+  local port="$1"
+  local password="$2"
+  local ws_path="$3"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "trojan-ws",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "trojan",
+      "settings": {
+        "clients": [
+          {
+            "password": "${password}"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "none",
+        "wsSettings": {
+          "path": "${ws_path}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_trojan_httpupgrade_config() {
+  local port="$1"
+  local password="$2"
+  local http_path="$3"
+  local host_header="$4"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "trojan-httpupgrade",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "trojan",
+      "settings": {
+        "clients": [
+          {
+            "password": "${password}"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "httpupgrade",
+        "security": "none",
+        "httpupgradeSettings": {
+          "path": "${http_path}",
+          "host": "${host_header}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_trojan_grpc_config() {
+  local port="$1"
+  local password="$2"
+  local service_name="$3"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "trojan-grpc",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "trojan",
+      "settings": {
+        "clients": [
+          {
+            "password": "${password}"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "grpc",
+        "security": "none",
+        "grpcSettings": {
+          "serviceName": "${service_name}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_trojan_xhttp_config() {
+  local port="$1"
+  local password="$2"
+  local xhttp_path="$3"
+  local xhttp_mode="$4"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "trojan-xhttp",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "trojan",
+      "settings": {
+        "clients": [
+          {
+            "password": "${password}"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "none",
+        "xhttpSettings": {
+          "path": "${xhttp_path}",
+          "mode": "${xhttp_mode}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
 build_vless_tcp_tls_uri() {
   local host="$1"
   local port="$2"
@@ -1084,6 +1294,45 @@ build_trojan_tls_uri() {
   encoded_domain="$(urlencode "${domain}")"
   printf 'trojan://%s@%s:%s?security=tls&type=tcp&sni=%s#Trojan-TLS-%s\n' \
     "${encoded_password}" "${host}" "${port}" "${encoded_domain}" "${host}"
+}
+
+build_trojan_uri() {
+  local name="$1"
+  local host="$2"
+  local port="$3"
+  local password="$4"
+  local network="$5"
+  local path="${6:-}"
+  local host_header="${7:-}"
+  local service_name="${8:-}"
+  local xhttp_mode="${9:-}"
+  local encoded_name
+  local encoded_password
+  local encoded_path
+  local encoded_host
+  local encoded_service_name
+  local encoded_xhttp_mode
+  local extra=""
+
+  encoded_name="$(urlencode "${name}")"
+  encoded_password="$(urlencode "${password}")"
+  encoded_path="$(urlencode "${path}")"
+  encoded_host="$(urlencode "${host_header}")"
+  encoded_service_name="$(urlencode "${service_name}")"
+  encoded_xhttp_mode="$(urlencode "${xhttp_mode}")"
+
+  if [ "${network}" = "ws" ] || [ "${network}" = "httpupgrade" ]; then
+    extra="$(printf '&host=%s&path=%s' "${encoded_host}" "${encoded_path}")"
+  fi
+  if [ "${network}" = "grpc" ]; then
+    extra="$(printf '&serviceName=%s&mode=gun' "${encoded_service_name}")"
+  fi
+  if [ "${network}" = "xhttp" ]; then
+    extra="$(printf '&path=%s&mode=%s' "${encoded_path}" "${encoded_xhttp_mode}")"
+  fi
+
+  printf 'trojan://%s@%s:%s?security=none&type=%s%s#%s\n' \
+    "${encoded_password}" "${host}" "${port}" "${network}" "${extra}" "${encoded_name}"
 }
 
 build_vless_grpc_tls_uri() {
@@ -3682,6 +3931,307 @@ EOF
   yellow "如果客户端连不上，优先检查 NAT 面板是否转发整个 UDP 端口范围 ${port_range}。"
 }
 
+trojan_tcp_install() {
+  local detected_ip
+  local server_host
+  local port
+  local password
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 Trojan TCP 端口，必须在 NAT 面板转发 TCP' '10100')"
+  ensure_port_available port
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
+
+  yellow "Trojan TCP 当前不带 TLS；公网长期使用建议优先 Trojan TLS、Reality 或 HY2。"
+  if ! prompt_yes_no '确认继续安装 Trojan TCP' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_trojan_tcp_config "${port}" "${password}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=trojan-tcp
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+TROJAN_PASSWORD=${password}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_trojan_uri "Trojan-TCP-${server_host}" "${server_host}" "${port}" "${password}" 'tcp')"
+
+  echo
+  green "Trojan TCP 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+trojan_ws_install() {
+  local detected_ip
+  local server_host
+  local port
+  local password
+  local ws_path
+  local host_header
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 Trojan WS TCP 端口，必须在 NAT 面板转发 TCP' '10101')"
+  ensure_port_available port
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
+  host_header="$(prompt_value '请输入 WebSocket Host 伪装域名，留空使用连接地址' "${server_host}")"
+
+  yellow "Trojan WS 当前不带 TLS；如需证书保护，请使用 Trojan WS TLS。"
+  if ! prompt_yes_no '确认继续安装 Trojan WS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_trojan_ws_config "${port}" "${password}" "${ws_path}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=trojan-ws
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+TROJAN_PASSWORD=${password}
+WS_PATH=${ws_path}
+WS_HOST=${host_header}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_trojan_uri "Trojan-WS-${server_host}" "${server_host}" "${port}" "${password}" 'ws' "${ws_path}" "${host_header}")"
+
+  echo
+  green "Trojan WS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+trojan_httpupgrade_install() {
+  local detected_ip
+  local server_host
+  local port
+  local password
+  local http_path
+  local host_header
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 Trojan HTTPUpgrade TCP 端口，必须在 NAT 面板转发 TCP' '10102')"
+  ensure_port_available port
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
+  http_path="$(normalize_ws_path "$(prompt_value '请输入 HTTPUpgrade 路径' "/$(random_hex 8)")")"
+  host_header="$(prompt_value '请输入 HTTPUpgrade Host 伪装域名，留空使用连接地址' "${server_host}")"
+
+  yellow "Trojan HTTPUpgrade 当前不带 TLS；如需证书保护，后续使用 TLS 类协议。"
+  if ! prompt_yes_no '确认继续安装 Trojan HTTPUpgrade' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_trojan_httpupgrade_config "${port}" "${password}" "${http_path}" "${host_header}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=trojan-httpupgrade
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+TROJAN_PASSWORD=${password}
+HTTP_PATH=${http_path}
+HTTP_HOST=${host_header}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_trojan_uri "Trojan-HTTPUpgrade-${server_host}" "${server_host}" "${port}" "${password}" 'httpupgrade' "${http_path}" "${host_header}")"
+
+  echo
+  green "Trojan HTTPUpgrade 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+trojan_grpc_install() {
+  local detected_ip
+  local server_host
+  local port
+  local password
+  local service_name
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 Trojan gRPC TCP 端口，必须在 NAT 面板转发 TCP' '10103')"
+  ensure_port_available port
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
+  service_name="$(prompt_value '请输入 gRPC serviceName' "$(random_hex 8)")"
+
+  yellow "Trojan gRPC 当前不带 TLS；如需证书保护，请使用 Trojan gRPC TLS。"
+  if ! prompt_yes_no '确认继续安装 Trojan gRPC' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_trojan_grpc_config "${port}" "${password}" "${service_name}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=trojan-grpc
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+TROJAN_PASSWORD=${password}
+GRPC_SERVICE_NAME=${service_name}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_trojan_uri "Trojan-gRPC-${server_host}" "${server_host}" "${port}" "${password}" 'grpc' '' '' "${service_name}")"
+
+  echo
+  green "Trojan gRPC 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+trojan_xhttp_install() {
+  local detected_ip
+  local server_host
+  local port
+  local password
+  local xhttp_path
+  local xhttp_mode
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port="$(prompt_port '请输入 Trojan XHTTP TCP 端口，必须在 NAT 面板转发 TCP' '10104')"
+  ensure_port_available port
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
+  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "/$(random_hex 8)")")"
+  xhttp_mode="$(prompt_value '请输入 XHTTP mode' 'auto')"
+
+  yellow "Trojan XHTTP 当前不带 TLS；如需证书保护，后续可增加 XHTTP TLS。"
+  if ! prompt_yes_no '确认继续安装 Trojan XHTTP' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_trojan_xhttp_config "${port}" "${password}" "${xhttp_path}" "${xhttp_mode}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=trojan-xhttp
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+TROJAN_PASSWORD=${password}
+XHTTP_PATH=${xhttp_path}
+XHTTP_MODE=${xhttp_mode}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_trojan_uri "Trojan-XHTTP-${server_host}" "${server_host}" "${port}" "${password}" 'xhttp' "${xhttp_path}" '' '' "${xhttp_mode}")"
+
+  echo
+  green "Trojan XHTTP 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
 shadowsocks_install() {
   local detected_ip
   local server_host
@@ -4199,6 +4749,11 @@ show_menu() {
   29) VLESS XHTTP - TCP，不带 TLS
   30) VMess XHTTP - TCP，不带 TLS
   31) TLS TXT 检测工具
+  32) Trojan TCP - TCP，不带 TLS
+  33) Trojan WS - TCP，不带 TLS
+  34) Trojan HTTPUpgrade - TCP，不带 TLS
+  35) Trojan gRPC - TCP，不带 TLS
+  36) Trojan XHTTP - TCP，不带 TLS
   0) 退出
 EOF
 }
@@ -4243,6 +4798,11 @@ main() {
       29) vless_xhttp_install ;;
       30) vmess_xhttp_install ;;
       31) txt_check_tool ;;
+      32) trojan_tcp_install ;;
+      33) trojan_ws_install ;;
+      34) trojan_httpupgrade_install ;;
+      35) trojan_grpc_install ;;
+      36) trojan_xhttp_install ;;
       0) exit 0 ;;
       *) yellow "无效选项" ;;
     esac

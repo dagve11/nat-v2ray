@@ -73,6 +73,11 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("29) VLESS XHTTP", script)
         self.assertIn("30) VMess XHTTP", script)
         self.assertIn("31) TLS TXT", script)
+        self.assertIn("32) Trojan TCP", script)
+        self.assertIn("33) Trojan WS", script)
+        self.assertIn("34) Trojan HTTPUpgrade", script)
+        self.assertIn("35) Trojan gRPC", script)
+        self.assertIn("36) Trojan XHTTP", script)
         self.assertIn("TXT", script)
 
     def test_reality_supports_xray_config_and_share_uri(self) -> None:
@@ -251,6 +256,28 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("build_vless_xhttp_uri()", script)
         self.assertIn("security=none&type=xhttp", script)
         self.assertIn("'xhttp'", script)
+
+    def test_trojan_plain_protocols_render_configs_and_links(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("render_trojan_tcp_config()", script)
+        self.assertIn("render_trojan_ws_config()", script)
+        self.assertIn("render_trojan_httpupgrade_config()", script)
+        self.assertIn("render_trojan_grpc_config()", script)
+        self.assertIn("render_trojan_xhttp_config()", script)
+        self.assertIn("trojan_tcp_install()", script)
+        self.assertIn("trojan_ws_install()", script)
+        self.assertIn("trojan_httpupgrade_install()", script)
+        self.assertIn("trojan_grpc_install()", script)
+        self.assertIn("trojan_xhttp_install()", script)
+        self.assertIn('"protocol": "trojan"', script)
+        self.assertIn('"security": "none"', script)
+        self.assertIn('"httpupgradeSettings"', script)
+        self.assertIn('"grpcSettings"', script)
+        self.assertIn('"xhttpSettings"', script)
+        self.assertIn("build_trojan_uri()", script)
+        self.assertIn("trojan://%s@%s:%s?security=none&type=%s", script)
+        self.assertIn("Trojan-XHTTP", script)
 
     def test_port_conflict_prompt_is_not_caddy_specific(self) -> None:
         script = read_install_script()
