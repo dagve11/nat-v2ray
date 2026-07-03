@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.7.0"
+VERSION="0.8.0"
 PROJECT_NAME="nat-v2ray"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HY2_CONFIG_DIR="/etc/hysteria"
@@ -1392,6 +1392,98 @@ render_vless_ws_config() {
 EOF
 }
 
+render_vless_tcp_dynamic_config() {
+  local port_range="$1"
+  local uuid="$2"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-tcp-dynamic",
+      "listen": "0.0.0.0",
+      "port": "${port_range}",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      },
+      "allocate": {
+        "strategy": "random",
+        "refresh": 5,
+        "concurrency": 3
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_vless_ws_dynamic_config() {
+  local port_range="$1"
+  local uuid="$2"
+  local ws_path="$3"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-ws-dynamic",
+      "listen": "0.0.0.0",
+      "port": "${port_range}",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "none",
+        "wsSettings": {
+          "path": "${ws_path}"
+        }
+      },
+      "allocate": {
+        "strategy": "random",
+        "refresh": 5,
+        "concurrency": 3
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
 build_vless_uri() {
   local name="$1"
   local host="$2"
@@ -2017,6 +2109,120 @@ EOF
   echo
   echo "分享链接："
   echo "${uri}"
+}
+
+vless_tcp_dynamic_install() {
+  local detected_ip
+  local server_host
+  local port_range
+  local uuid
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port_range="$(prompt_port_range '请输入 VLESS TCP dynamic port 端口范围，必须在 NAT 面板转发整个 TCP 端口范围' '20400-20410')"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+
+  yellow "VLESS TCP dynamic port 会在 TCP 端口范围 ${port_range} 中随机监听。NAT 面板必须转发整个 TCP 端口范围。"
+  if ! prompt_yes_no '确认继续安装 VLESS TCP dynamic port' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vless_tcp_dynamic_config "${port_range}" "${uuid}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vless-tcp-dynamic
+XRAY_HOST=${server_host}
+XRAY_PORT_RANGE=${port_range}
+XRAY_UUID=${uuid}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vless_uri "VLESS-TCP-dynamic-${server_host}" "${server_host}" "${port_range}" "${uuid}" 'tcp' '' '' 'none')"
+
+  echo
+  green "VLESS TCP dynamic port 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+  echo
+  yellow "如果客户端连不上，优先检查 NAT 面板是否转发整个 TCP 端口范围 ${port_range}。"
+}
+
+vless_ws_dynamic_install() {
+  local detected_ip
+  local server_host
+  local port_range
+  local uuid
+  local ws_path
+  local host_header
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  port_range="$(prompt_port_range '请输入 VLESS WS dynamic port 端口范围，必须在 NAT 面板转发整个 TCP 端口范围' '20500-20510')"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
+  host_header="$(prompt_value '请输入 WebSocket Host 伪装域名，留空使用连接地址' "${server_host}")"
+
+  yellow "VLESS WS dynamic port 会在 TCP 端口范围 ${port_range} 中随机监听。NAT 面板必须转发整个 TCP 端口范围。"
+  if ! prompt_yes_no '确认继续安装 VLESS WS dynamic port' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vless_ws_dynamic_config "${port_range}" "${uuid}" "${ws_path}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vless-ws-dynamic
+XRAY_HOST=${server_host}
+XRAY_PORT_RANGE=${port_range}
+XRAY_UUID=${uuid}
+WS_PATH=${ws_path}
+WS_HOST=${host_header}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vless_uri "VLESS-WS-dynamic-${server_host}" "${server_host}" "${port_range}" "${uuid}" 'ws' "${ws_path}" "${host_header}" 'none')"
+
+  echo
+  green "VLESS WS dynamic port 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "分享链接："
+  echo "${uri}"
+  echo
+  yellow "如果客户端连不上，优先检查 NAT 面板是否转发整个 TCP 端口范围 ${port_range}。"
 }
 
 vless_mkcp_install() {
@@ -3068,7 +3274,9 @@ show_menu() {
   18) VLESS mKCP dynamic port - UDP 端口范围
   19) VMess TCP dynamic port - TCP 端口范围
   20) VMess WS dynamic port - TCP 端口范围
-  21) TLS TXT 检测工具
+  21) VLESS TCP dynamic port - TCP 端口范围
+  22) VLESS WS dynamic port - TCP 端口范围
+  23) TLS TXT 检测工具
   0) 退出
 EOF
 }
@@ -3102,7 +3310,9 @@ main() {
       18) vless_mkcp_dynamic_install ;;
       19) vmess_tcp_dynamic_install ;;
       20) vmess_ws_dynamic_install ;;
-      21) txt_check_tool ;;
+      21) vless_tcp_dynamic_install ;;
+      22) vless_ws_dynamic_install ;;
+      23) txt_check_tool ;;
       0) exit 0 ;;
       *) yellow "无效选项" ;;
     esac

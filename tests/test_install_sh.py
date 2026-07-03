@@ -62,7 +62,9 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("18) VLESS mKCP dynamic port", script)
         self.assertIn("19) VMess TCP dynamic port", script)
         self.assertIn("20) VMess WS dynamic port", script)
-        self.assertIn("21) TLS TXT", script)
+        self.assertIn("21) VLESS TCP dynamic port", script)
+        self.assertIn("22) VLESS WS dynamic port", script)
+        self.assertIn("23) TLS TXT", script)
         self.assertIn("TXT", script)
 
     def test_reality_supports_xray_config_and_share_uri(self) -> None:
@@ -102,6 +104,8 @@ class InstallScriptTests(unittest.TestCase):
 
         self.assertIn("render_vless_tcp_config()", script)
         self.assertIn("render_vless_ws_config()", script)
+        self.assertIn("render_vless_tcp_dynamic_config()", script)
+        self.assertIn("render_vless_ws_dynamic_config()", script)
         self.assertIn("render_vless_mkcp_config()", script)
         self.assertIn("render_vless_mkcp_dynamic_config()", script)
         self.assertIn('"protocol": "vless"', script)
@@ -116,6 +120,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("encryption=none", script)
         self.assertIn("type=%s", script)
         self.assertIn("seed=%s", script)
+        self.assertIn("TCP 端口范围", script)
 
     def test_vmess_protocols_render_xray_configs_and_links(self) -> None:
         script = read_install_script()
