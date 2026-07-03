@@ -78,6 +78,9 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("34) Trojan HTTPUpgrade", script)
         self.assertIn("35) Trojan gRPC", script)
         self.assertIn("36) Trojan XHTTP", script)
+        self.assertIn("37) VLESS XHTTP TLS", script)
+        self.assertIn("38) VMess XHTTP TLS", script)
+        self.assertIn("39) Trojan XHTTP TLS", script)
         self.assertIn("TXT", script)
 
     def test_reality_supports_xray_config_and_share_uri(self) -> None:
@@ -278,6 +281,25 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("build_trojan_uri()", script)
         self.assertIn("trojan://%s@%s:%s?security=none&type=%s", script)
         self.assertIn("Trojan-XHTTP", script)
+
+    def test_xhttp_tls_protocols_use_txt_certificate_flow(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("render_vless_xhttp_tls_config()", script)
+        self.assertIn("render_vmess_xhttp_tls_config()", script)
+        self.assertIn("render_trojan_xhttp_tls_config()", script)
+        self.assertIn("vless_xhttp_tls_install()", script)
+        self.assertIn("vmess_xhttp_tls_install()", script)
+        self.assertIn("trojan_xhttp_tls_install()", script)
+        self.assertIn('"network": "xhttp"', script)
+        self.assertIn('"security": "tls"', script)
+        self.assertIn('"xhttpSettings"', script)
+        self.assertIn('"mode": "${xhttp_mode}"', script)
+        self.assertIn("request_tls_cert_manual_dns", script)
+        self.assertIn("build_vless_xhttp_tls_uri()", script)
+        self.assertIn("build_trojan_xhttp_tls_uri()", script)
+        self.assertIn("security=tls&type=xhttp", script)
+        self.assertIn("XHTTP-TLS", script)
 
     def test_port_conflict_prompt_is_not_caddy_specific(self) -> None:
         script = read_install_script()

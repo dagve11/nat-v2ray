@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.13.0"
+VERSION="0.14.0"
 PROJECT_NAME="nat-v2ray"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HY2_CONFIG_DIR="/etc/hysteria"
@@ -1233,6 +1233,60 @@ render_trojan_xhttp_config() {
 EOF
 }
 
+render_trojan_xhttp_tls_config() {
+  local port="$1"
+  local password="$2"
+  local xhttp_path="$3"
+  local xhttp_mode="$4"
+  local cert_file="$5"
+  local key_file="$6"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "trojan-xhttp-tls",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "trojan",
+      "settings": {
+        "clients": [
+          {
+            "password": "${password}"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "${cert_file}",
+              "keyFile": "${key_file}"
+            }
+          ]
+        },
+        "xhttpSettings": {
+          "path": "${xhttp_path}",
+          "mode": "${xhttp_mode}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
 build_vless_tcp_tls_uri() {
   local host="$1"
   local port="$2"
@@ -1281,6 +1335,23 @@ build_vless_xhttp_uri() {
   encoded_mode="$(urlencode "${xhttp_mode}")"
   printf 'vless://%s@%s:%s?encryption=none&security=none&type=xhttp&path=%s&mode=%s#VLESS-XHTTP-%s\n' \
     "${uuid}" "${host}" "${port}" "${encoded_path}" "${encoded_mode}" "${host}"
+}
+
+build_vless_xhttp_tls_uri() {
+  local host="$1"
+  local port="$2"
+  local uuid="$3"
+  local domain="$4"
+  local xhttp_path="$5"
+  local xhttp_mode="$6"
+  local encoded_domain
+  local encoded_path
+  local encoded_mode
+  encoded_domain="$(urlencode "${domain}")"
+  encoded_path="$(urlencode "${xhttp_path}")"
+  encoded_mode="$(urlencode "${xhttp_mode}")"
+  printf 'vless://%s@%s:%s?encryption=none&security=tls&type=xhttp&path=%s&mode=%s&sni=%s#VLESS-XHTTP-TLS-%s\n' \
+    "${uuid}" "${host}" "${port}" "${encoded_path}" "${encoded_mode}" "${encoded_domain}" "${host}"
 }
 
 build_trojan_tls_uri() {
@@ -1333,6 +1404,25 @@ build_trojan_uri() {
 
   printf 'trojan://%s@%s:%s?security=none&type=%s%s#%s\n' \
     "${encoded_password}" "${host}" "${port}" "${network}" "${extra}" "${encoded_name}"
+}
+
+build_trojan_xhttp_tls_uri() {
+  local host="$1"
+  local port="$2"
+  local password="$3"
+  local domain="$4"
+  local xhttp_path="$5"
+  local xhttp_mode="$6"
+  local encoded_password
+  local encoded_domain
+  local encoded_path
+  local encoded_mode
+  encoded_password="$(urlencode "${password}")"
+  encoded_domain="$(urlencode "${domain}")"
+  encoded_path="$(urlencode "${xhttp_path}")"
+  encoded_mode="$(urlencode "${xhttp_mode}")"
+  printf 'trojan://%s@%s:%s?security=tls&type=xhttp&path=%s&mode=%s&sni=%s#Trojan-XHTTP-TLS-%s\n' \
+    "${encoded_password}" "${host}" "${port}" "${encoded_path}" "${encoded_mode}" "${encoded_domain}" "${host}"
 }
 
 build_vless_grpc_tls_uri() {
@@ -1920,6 +2010,61 @@ render_vless_xhttp_config() {
 EOF
 }
 
+render_vless_xhttp_tls_config() {
+  local port="$1"
+  local uuid="$2"
+  local xhttp_path="$3"
+  local xhttp_mode="$4"
+  local cert_file="$5"
+  local key_file="$6"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-xhttp-tls",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "${cert_file}",
+              "keyFile": "${key_file}"
+            }
+          ]
+        },
+        "xhttpSettings": {
+          "path": "${xhttp_path}",
+          "mode": "${xhttp_mode}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
 render_vless_tcp_dynamic_config() {
   local port_range="$1"
   local uuid="$2"
@@ -2352,6 +2497,61 @@ render_vmess_xhttp_config() {
       "streamSettings": {
         "network": "xhttp",
         "security": "none",
+        "xhttpSettings": {
+          "path": "${xhttp_path}",
+          "mode": "${xhttp_mode}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+}
+
+render_vmess_xhttp_tls_config() {
+  local port="$1"
+  local uuid="$2"
+  local xhttp_path="$3"
+  local xhttp_mode="$4"
+  local cert_file="$5"
+  local key_file="$6"
+
+  cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vmess-xhttp-tls",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "alterId": 0
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "${cert_file}",
+              "keyFile": "${key_file}"
+            }
+          ]
+        },
         "xhttpSettings": {
           "path": "${xhttp_path}",
           "mode": "${xhttp_mode}"
@@ -2950,6 +3150,81 @@ EOF
 
   echo
   green "VLESS XHTTP 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
+vless_xhttp_tls_install() {
+  local detected_ip
+  local server_host
+  local domain
+  local port
+  local uuid
+  local xhttp_path
+  local xhttp_mode
+  local cert_dir
+  local cert_file
+  local key_file
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  port="$(prompt_port '请输入 VLESS XHTTP TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "/$(random_hex 8)")")"
+  xhttp_mode="$(prompt_value '请输入 XHTTP mode' 'auto')"
+
+  yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
+  if ! prompt_yes_no '确认继续安装 VLESS XHTTP TLS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  request_tls_cert_manual_dns "${domain}"
+  cert_dir="$(cert_dir_for_domain "${domain}")"
+  cert_file="${cert_dir}/fullchain.cer"
+  key_file="${cert_dir}/private.key"
+
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vless_xhttp_tls_config "${port}" "${uuid}" "${xhttp_path}" "${xhttp_mode}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vless-xhttp-tls
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+TLS_DOMAIN=${domain}
+XHTTP_PATH=${xhttp_path}
+XHTTP_MODE=${xhttp_mode}
+TLS_CERT=${cert_file}
+TLS_KEY=${key_file}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vless_xhttp_tls_uri "${server_host}" "${port}" "${uuid}" "${domain}" "${xhttp_path}" "${xhttp_mode}")"
+
+  echo
+  green "VLESS XHTTP TLS 安装完成"
   echo "服务状态：$(systemctl is-active xray || true)"
   echo
   echo "监听检查："
@@ -3693,6 +3968,81 @@ EOF
   echo "${uri}"
 }
 
+vmess_xhttp_tls_install() {
+  local detected_ip
+  local server_host
+  local domain
+  local port
+  local uuid
+  local xhttp_path
+  local xhttp_mode
+  local cert_dir
+  local cert_file
+  local key_file
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  port="$(prompt_port '请输入 VMess XHTTP TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')"
+  ensure_port_available port
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "/$(random_hex 8)")")"
+  xhttp_mode="$(prompt_value '请输入 XHTTP mode' 'auto')"
+
+  yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
+  if ! prompt_yes_no '确认继续安装 VMess XHTTP TLS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  request_tls_cert_manual_dns "${domain}"
+  cert_dir="$(cert_dir_for_domain "${domain}")"
+  cert_file="${cert_dir}/fullchain.cer"
+  key_file="${cert_dir}/private.key"
+
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_vmess_xhttp_tls_config "${port}" "${uuid}" "${xhttp_path}" "${xhttp_mode}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=vmess-xhttp-tls
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+XRAY_UUID=${uuid}
+TLS_DOMAIN=${domain}
+XHTTP_PATH=${xhttp_path}
+XHTTP_MODE=${xhttp_mode}
+TLS_CERT=${cert_file}
+TLS_KEY=${key_file}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_vmess_link "VMess-XHTTP-TLS-${server_host}" "${server_host}" "${port}" "${uuid}" 'xhttp' "${xhttp_path}" "${xhttp_mode}" 'tls')"
+
+  echo
+  green "VMess XHTTP TLS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
 vmess_tcp_dynamic_install() {
   local detected_ip
   local server_host
@@ -4232,6 +4582,81 @@ EOF
   echo "${uri}"
 }
 
+trojan_xhttp_tls_install() {
+  local detected_ip
+  local server_host
+  local domain
+  local port
+  local password
+  local xhttp_path
+  local xhttp_mode
+  local cert_dir
+  local cert_file
+  local key_file
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  port="$(prompt_port '请输入 Trojan XHTTP TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')"
+  ensure_port_available port
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
+  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "/$(random_hex 8)")")"
+  xhttp_mode="$(prompt_value '请输入 XHTTP mode' 'auto')"
+
+  yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
+  if ! prompt_yes_no '确认继续安装 Trojan XHTTP TLS' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  request_tls_cert_manual_dns "${domain}"
+  cert_dir="$(cert_dir_for_domain "${domain}")"
+  cert_file="${cert_dir}/fullchain.cer"
+  key_file="${cert_dir}/private.key"
+
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_trojan_xhttp_tls_config "${port}" "${password}" "${xhttp_path}" "${xhttp_mode}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=trojan-xhttp-tls
+XRAY_HOST=${server_host}
+XRAY_PORT=${port}
+TROJAN_PASSWORD=${password}
+TLS_DOMAIN=${domain}
+XHTTP_PATH=${xhttp_path}
+XHTTP_MODE=${xhttp_mode}
+TLS_CERT=${cert_file}
+TLS_KEY=${key_file}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  uri="$(build_trojan_xhttp_tls_uri "${server_host}" "${port}" "${password}" "${domain}" "${xhttp_path}" "${xhttp_mode}")"
+
+  echo
+  green "Trojan XHTTP TLS 安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "分享链接："
+  echo "${uri}"
+}
+
 shadowsocks_install() {
   local detected_ip
   local server_host
@@ -4754,6 +5179,9 @@ show_menu() {
   34) Trojan HTTPUpgrade - TCP，不带 TLS
   35) Trojan gRPC - TCP，不带 TLS
   36) Trojan XHTTP - TCP，不带 TLS
+  37) VLESS XHTTP TLS - TCP，TLS 使用 TXT 检测
+  38) VMess XHTTP TLS - TCP，TLS 使用 TXT 检测
+  39) Trojan XHTTP TLS - TCP，TLS 使用 TXT 检测
   0) 退出
 EOF
 }
@@ -4803,6 +5231,9 @@ main() {
       34) trojan_httpupgrade_install ;;
       35) trojan_grpc_install ;;
       36) trojan_xhttp_install ;;
+      37) vless_xhttp_tls_install ;;
+      38) vmess_xhttp_tls_install ;;
+      39) trojan_xhttp_tls_install ;;
       0) exit 0 ;;
       *) yellow "无效选项" ;;
     esac
