@@ -5743,7 +5743,7 @@ install_nv_command() {
   nv_real="$(readlink -f "${NV_BIN}" 2>/dev/null || printf '%s' "${NV_BIN}")"
   mkdir -p "$(dirname "${NV_BIN}")"
 
-  if [ -r "${source_path}" ] && [ "${source_real}" != "${nv_real}" ]; then
+  if [ -f "${source_path}" ] && [ -r "${source_path}" ] && [ "${source_real}" != "${nv_real}" ]; then
     install -m 0755 "${source_path}" "${NV_BIN}"
   elif [ ! -x "${NV_BIN}" ]; then
     curl -fsSL -o "${NV_BIN}" "${SCRIPT_URL}"

@@ -403,6 +403,15 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("qr)", script)
         self.assertIn("del|delete|rm)", script)
 
+    def test_nv_install_does_not_copy_process_substitution_fd(self) -> None:
+        script = read_install_script()
+        install_start = script.index("install_nv_command()")
+        install_end = script.index("\nensure_nv_command()", install_start)
+        install_body = script[install_start:install_end]
+
+        self.assertIn('[ -f "${source_path}" ] && [ -r "${source_path}" ]', install_body)
+        self.assertIn('curl -fsSL -o "${NV_BIN}" "${SCRIPT_URL}"', install_body)
+
     def test_nv_test_and_update_core_geo_are_available(self) -> None:
         script = read_install_script()
 
