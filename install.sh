@@ -49,12 +49,34 @@ require_linux() {
   fi
 }
 
+configure_readline_keys() {
+  if [ ! -t 0 ] || [ "${READLINE_KEYS_CONFIGURED:-0}" = "1" ]; then
+    return 0
+  fi
+
+  bind '"\C-h": backward-delete-char' 2>/dev/null || true
+  bind '"\C-?": backward-delete-char' 2>/dev/null || true
+  bind '"\e[3~": delete-char' 2>/dev/null || true
+  READLINE_KEYS_CONFIGURED=1
+}
+
+read_input() {
+  local target="$1"
+
+  if [ -t 0 ]; then
+    configure_readline_keys
+    IFS= read -r -e "${target}"
+  else
+    IFS= read -r "${target}"
+  fi
+}
+
 prompt_value() {
   local message="$1"
   local default_value="$2"
   local value
   printf '%s [%s]: ' "${message}" "${default_value}" >&2
-  read -r value
+  read_input value
   if [ -z "${value}" ]; then
     printf '%s\n' "${default_value}"
   else
@@ -68,7 +90,7 @@ prompt_yes_no() {
   local value
   while true; do
     printf '%s [%s]: ' "${message}" "${default_value}" >&2
-    read -r value
+    read_input value
     value="${value:-${default_value}}"
     case "${value}" in
       y|Y|yes|YES) return 0 ;;
@@ -83,7 +105,7 @@ prompt_required_yes() {
   local value
   while true; do
     printf '%s ' "${message}" >&2
-    read -r value
+    read_input value
     case "${value}" in
       y|Y|yes|YES) return 0 ;;
       *) yellow "请输入 (y)" >&2 ;;
@@ -138,7 +160,7 @@ prompt_optional_port() {
   local port
   while true; do
     printf '%s: ' "${message}" >&2
-    read -r port
+    read_input port
     if [ -z "${port}" ]; then
       printf '\n'
       return 0
@@ -679,7 +701,7 @@ select_xray_profile() {
     index=$((index + 1))
   done
   printf '请选择 [1]: ' >&2
-  read -r choice
+  read_input choice
   choice="${choice:-1}"
   if ! [[ "${choice}" =~ ^[0-9]+$ ]] || [ "${choice}" -lt 1 ] || [ "${choice}" -gt "${#profiles[@]}" ]; then
     die "无效 profile 选项"
@@ -955,7 +977,7 @@ ensure_port_available() {
   3) 退出
 EOF
     printf '选择 [1]: ' >&2
-    read -r choice
+    read_input choice
     choice="${choice:-1}"
     case "${choice}" in
       1)
@@ -963,7 +985,7 @@ EOF
         ;;
       2)
         printf '请输入要停用的 systemd 服务名，留空返回: ' >&2
-        read -r service_name
+        read_input service_name
         if [ -z "${service_name}" ]; then
           yellow "未输入服务名，返回端口处理菜单"
           continue
@@ -5972,7 +5994,7 @@ delete_config() {
   0) 返回
 EOF
   printf '请选择 [0-3]: ' >&2
-  read -r choice
+  read_input choice
   choice="${choice:-0}"
   case "${choice}" in
     1) delete_xray_profile ;;
@@ -6019,7 +6041,7 @@ runtime_management() {
   0) 返回
 EOF
     printf '请选择 [0-8]: ' >&2
-    read -r choice
+    read_input choice
     choice="${choice:-7}"
     case "${choice}" in
       1) systemctl enable --now xray ;;
@@ -6195,7 +6217,7 @@ other_tools() {
   0) 返回
 EOF
     printf '请选择 [0-4]: ' >&2
-    read -r choice
+    read_input choice
     choice="${choice:-0}"
     case "${choice}" in
       1) txt_check_tool ;;
@@ -6256,7 +6278,7 @@ control_panel() {
   while true; do
     show_control_panel
     printf '请选择 [1-10]: ' >&2
-    read -r choice
+    read_input choice
     choice="${choice:-1}"
     case "${choice}" in
       1) protocol_menu ;;
@@ -6281,7 +6303,7 @@ protocol_menu() {
   while true; do
     show_menu
     printf '请输入选项 [1]: ' >&2
-    read -r choice
+    read_input choice
     choice="${choice:-1}"
     case "${choice}" in
       1) hy2_install ;;

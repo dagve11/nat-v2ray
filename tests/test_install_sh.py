@@ -457,6 +457,23 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotIn('print_file_if_exists "Xray 环境"', view_body)
         self.assertNotIn('print_file_if_exists "HY2 配置"', view_body)
 
+    def test_interactive_reads_use_readline_backspace_compatibility(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("configure_readline_keys()", script)
+        self.assertIn("read_input()", script)
+        self.assertIn('"\\C-h": backward-delete-char', script)
+        self.assertIn('"\\C-?": backward-delete-char', script)
+        self.assertIn("read -r -e", script)
+        self.assertIn("read_input value", script)
+        self.assertIn("read_input port", script)
+        self.assertIn("read_input choice", script)
+        self.assertIn("read_input service_name", script)
+        self.assertNotIn("read -r value", script)
+        self.assertNotIn("read -r port\n", script)
+        self.assertNotIn("read -r choice", script)
+        self.assertNotIn("read -r service_name", script)
+
     def test_nv_test_and_update_core_geo_are_available(self) -> None:
         script = read_install_script()
 
