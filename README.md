@@ -55,7 +55,7 @@ bash install.sh
 `nv` 会打开 233boy 风格的总控台：
 
 ```text
-------------- nat-v2ray 0.17.0 -------------
+------------- nat-v2ray 0.17.1 -------------
 Xray 26.3.27: running
 Hysteria2: not installed
 命令: nv
@@ -91,6 +91,8 @@ nv update hy2  # 更新 Hysteria2 core
 nv update geo  # 更新 geoip.dat / geosite.dat
 nv uninstall  # 卸载 nat-v2ray
 ```
+
+`nv uninstall` 是完整卸载：会停止服务，并删除脚本安装的二进制、systemd 服务、配置目录、证书目录、日志目录、geo 数据和 `nv` 命令。
 
 ## 多配置管理
 

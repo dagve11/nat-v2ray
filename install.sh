@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.17.0"
+VERSION="0.17.1"
 PROJECT_NAME="nat-v2ray"
 REPO_URL="https://github.com/dagve11/nat-v2ray"
 SCRIPT_URL="https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install.sh"
@@ -6018,7 +6018,7 @@ uninstall_nat_v2ray() {
   require_root
   require_linux
 
-  red "将卸载 nat-v2ray、停止服务并删除配置、证书和命令。"
+  red "将卸载 nat-v2ray，并删除脚本安装的服务、二进制、配置、证书、日志和命令。"
   if ! prompt_yes_no '确认卸载 nat-v2ray' 'n'; then
     yellow "已取消"
     return 0
@@ -6026,12 +6026,25 @@ uninstall_nat_v2ray() {
 
   systemctl disable --now xray >/dev/null 2>&1 || true
   systemctl disable --now hysteria-server >/dev/null 2>&1 || true
-  rm -f "${XRAY_SERVICE_FILE}" "${HY2_SERVICE_FILE}"
+  systemctl reset-failed xray hysteria-server >/dev/null 2>&1 || true
+
   rm -f "${XRAY_BIN}" "${HYSTERIA_BIN}" "${NV_BIN}"
-  rm -f "${XRAY_CONFIG_FILE}" "${XRAY_ENV_FILE}"
-  rm -rf "${XRAY_PROFILE_DIR}"
-  rm -f "${HY2_CONFIG_FILE}" "${HY2_ENV_FILE}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}"
+  rm -f "${XRAY_SERVICE_FILE}" "${HY2_SERVICE_FILE}"
+  rm -f /lib/systemd/system/xray.service /lib/systemd/system/hysteria-server.service
+  rm -f /etc/init.d/xray /etc/init.d/hysteria-server
+  rm -rf "${XRAY_CONFIG_DIR}"
+  rm -rf "${HY2_CONFIG_DIR}"
   rm -rf "${CERT_BASE_DIR}"
+  rm -rf /usr/local/share/xray
+  rm -rf /var/log/xray
+  rm -rf /var/log/hysteria
+  rm -rf /var/log/hysteria-server
+  rm -rf /tmp/nat-v2ray-* /tmp/Xray-linux-*.zip /tmp/hysteria-linux-*
+
+  if [ -f /root/.bashrc ]; then
+    sed -i '/nat-v2ray/d;/alias nv=/d;/\/usr\/local\/bin\/nv/d' /root/.bashrc || true
+  fi
+
   systemctl daemon-reload >/dev/null 2>&1 || true
   green "nat-v2ray 已卸载"
 }

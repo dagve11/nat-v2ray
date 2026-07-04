@@ -426,6 +426,27 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("render_legacy_kcp_settings()", script)
         self.assertIn("26.1.24", script)
 
+    def test_uninstall_removes_all_owned_files_like_233boy(self) -> None:
+        script = read_install_script()
+        uninstall_start = script.index("uninstall_nat_v2ray()")
+        uninstall_end = script.index("\nshow_help()", uninstall_start)
+        uninstall_body = script[uninstall_start:uninstall_end]
+
+        self.assertIn('systemctl disable --now xray', uninstall_body)
+        self.assertIn('systemctl disable --now hysteria-server', uninstall_body)
+        self.assertIn('rm -rf "${XRAY_CONFIG_DIR}"', uninstall_body)
+        self.assertIn('rm -rf "${HY2_CONFIG_DIR}"', uninstall_body)
+        self.assertIn('rm -rf /usr/local/share/xray', uninstall_body)
+        self.assertIn('rm -rf /var/log/xray', uninstall_body)
+        self.assertIn('rm -rf /var/log/hysteria', uninstall_body)
+        self.assertIn('rm -f "${XRAY_BIN}" "${HYSTERIA_BIN}" "${NV_BIN}"', uninstall_body)
+        self.assertIn('rm -f "${XRAY_SERVICE_FILE}" "${HY2_SERVICE_FILE}"', uninstall_body)
+        self.assertIn('rm -f /lib/systemd/system/xray.service', uninstall_body)
+        self.assertIn('rm -f /etc/init.d/xray', uninstall_body)
+        self.assertIn('sed -i', uninstall_body)
+        self.assertIn('/root/.bashrc', uninstall_body)
+        self.assertIn('systemctl daemon-reload', uninstall_body)
+
 
 if __name__ == "__main__":
     unittest.main()
