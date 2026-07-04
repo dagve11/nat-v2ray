@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.14.1"
+VERSION="0.15.0"
 PROJECT_NAME="nat-v2ray"
+REPO_URL="https://github.com/dagve11/nat-v2ray"
+SCRIPT_URL="https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install.sh"
+NV_BIN="/usr/local/bin/nv"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HY2_CONFIG_DIR="/etc/hysteria"
 HY2_CONFIG_FILE="${HY2_CONFIG_DIR}/config.yaml"
@@ -5186,7 +5189,301 @@ show_menu() {
 EOF
 }
 
-main() {
+install_nv_command() {
+  local source_path
+  local source_real
+  local nv_real
+
+  require_root
+  require_linux
+
+  source_path="${BASH_SOURCE[0]}"
+  source_real="$(readlink -f "${source_path}" 2>/dev/null || printf '%s' "${source_path}")"
+  nv_real="$(readlink -f "${NV_BIN}" 2>/dev/null || printf '%s' "${NV_BIN}")"
+  mkdir -p "$(dirname "${NV_BIN}")"
+
+  if [ -r "${source_path}" ] && [ "${source_real}" != "${nv_real}" ]; then
+    install -m 0755 "${source_path}" "${NV_BIN}"
+  elif [ ! -x "${NV_BIN}" ]; then
+    curl -fsSL -o "${NV_BIN}" "${SCRIPT_URL}"
+    chmod 0755 "${NV_BIN}"
+  else
+    chmod 0755 "${NV_BIN}" || true
+  fi
+}
+
+ensure_nv_command() {
+  if [ "$(id -u)" -eq 0 ] && [ "$(uname -s)" = "Linux" ]; then
+    install_nv_command >/dev/null 2>&1 || true
+  fi
+}
+
+service_status_word() {
+  local service_name="$1"
+  local state
+
+  if ! command -v systemctl >/dev/null 2>&1; then
+    printf 'unknown\n'
+    return 0
+  fi
+
+  state="$(systemctl is-active "${service_name}" 2>/dev/null || true)"
+  case "${state}" in
+    active) printf 'running\n' ;;
+    inactive) printf 'stopped\n' ;;
+    failed) printf 'failed\n' ;;
+    *) printf 'not installed\n' ;;
+  esac
+}
+
+xray_version_label() {
+  if [ -x "${XRAY_BIN}" ]; then
+    "${XRAY_BIN}" version 2>/dev/null | awk 'NR == 1 { print $2; exit }'
+  else
+    printf 'not installed\n'
+  fi
+}
+
+hysteria_version_label() {
+  if [ -x "${HYSTERIA_BIN}" ]; then
+    "${HYSTERIA_BIN}" version 2>/dev/null | awk 'NR == 1 { print $NF; exit }'
+  else
+    printf 'not installed\n'
+  fi
+}
+
+show_service_status() {
+  if [ -x "${XRAY_BIN}" ]; then
+    printf 'Xray %s: %s\n' "$(xray_version_label)" "$(service_status_word xray)"
+  else
+    printf 'Xray: not installed\n'
+  fi
+
+  if [ -x "${HYSTERIA_BIN}" ]; then
+    printf 'Hysteria2 %s: %s\n' "$(hysteria_version_label)" "$(service_status_word hysteria-server)"
+  else
+    printf 'Hysteria2: not installed\n'
+  fi
+}
+
+show_control_panel() {
+  cat <<EOF
+
+------------- nat-v2ray ${VERSION} -------------
+$(show_service_status)
+命令: nv
+仓库: ${REPO_URL}
+
+ 1) 添加配置
+ 2) 更改配置
+ 3) 查看配置
+ 4) 删除配置
+ 5) 运行管理
+ 6) 更新
+ 7) 卸载
+ 8) 帮助
+ 9) 其他
+10) 关于
+ 0) 退出
+EOF
+}
+
+print_file_if_exists() {
+  local title="$1"
+  local file_path="$2"
+
+  echo
+  blue "${title}: ${file_path}"
+  if [ -f "${file_path}" ]; then
+    sed 's/^/  /' "${file_path}"
+  else
+    yellow "  未找到"
+  fi
+}
+
+view_config() {
+  require_linux
+
+  show_service_status
+  print_file_if_exists "Xray 环境" "${XRAY_ENV_FILE}"
+  print_file_if_exists "Xray 配置" "${XRAY_CONFIG_FILE}"
+  print_file_if_exists "HY2 环境" "${HY2_ENV_FILE}"
+  print_file_if_exists "HY2 配置" "${HY2_CONFIG_FILE}"
+}
+
+change_config() {
+  yellow "当前脚本同一时间只管理一份 Xray 配置和一份 HY2 配置。重新安装协议会自动备份旧 Xray 配置。"
+  protocol_menu
+}
+
+delete_config() {
+  require_root
+  require_linux
+
+  yellow "将停止 Xray/HY2 并删除当前配置文件，二进制和 nv 命令会保留。"
+  if ! prompt_yes_no '确认删除当前配置' 'n'; then
+    yellow "已取消"
+    return 0
+  fi
+
+  systemctl disable --now xray >/dev/null 2>&1 || true
+  systemctl disable --now hysteria-server >/dev/null 2>&1 || true
+  rm -f "${XRAY_CONFIG_FILE}" "${XRAY_ENV_FILE}"
+  rm -f "${HY2_CONFIG_FILE}" "${HY2_ENV_FILE}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}"
+  green "配置已删除"
+}
+
+runtime_management() {
+  local choice
+
+  require_root
+  require_linux
+
+  while true; do
+    cat <<EOF
+
+运行管理：
+  1) 启动 Xray
+  2) 停止 Xray
+  3) 重启 Xray
+  4) 启动 Hysteria2
+  5) 停止 Hysteria2
+  6) 重启 Hysteria2
+  7) 查看状态
+  0) 返回
+EOF
+    printf '请选择 [0-7]: ' >&2
+    read -r choice
+    choice="${choice:-7}"
+    case "${choice}" in
+      1) systemctl enable --now xray ;;
+      2) systemctl stop xray ;;
+      3) systemctl restart xray ;;
+      4) systemctl enable --now hysteria-server ;;
+      5) systemctl stop hysteria-server ;;
+      6) systemctl restart hysteria-server ;;
+      7) show_service_status ;;
+      0) return 0 ;;
+      *) yellow "无效选项" ;;
+    esac
+  done
+}
+
+update_nv_command() {
+  local temp_file
+
+  require_root
+  require_linux
+
+  temp_file="${NV_BIN}.tmp.$$"
+  curl -fsSL -o "${temp_file}" "${SCRIPT_URL}" || die "下载更新失败"
+  install -m 0755 "${temp_file}" "${NV_BIN}"
+  rm -f "${temp_file}"
+  green "nv 已更新：${NV_BIN}"
+}
+
+uninstall_nat_v2ray() {
+  require_root
+  require_linux
+
+  red "将卸载 nat-v2ray、停止服务并删除配置、证书和命令。"
+  if ! prompt_yes_no '确认卸载 nat-v2ray' 'n'; then
+    yellow "已取消"
+    return 0
+  fi
+
+  systemctl disable --now xray >/dev/null 2>&1 || true
+  systemctl disable --now hysteria-server >/dev/null 2>&1 || true
+  rm -f "${XRAY_SERVICE_FILE}" "${HY2_SERVICE_FILE}"
+  rm -f "${XRAY_BIN}" "${HYSTERIA_BIN}" "${NV_BIN}"
+  rm -f "${XRAY_CONFIG_FILE}" "${XRAY_ENV_FILE}"
+  rm -f "${HY2_CONFIG_FILE}" "${HY2_ENV_FILE}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}"
+  rm -rf "${CERT_BASE_DIR}"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  green "nat-v2ray 已卸载"
+}
+
+show_help() {
+  cat <<EOF
+
+常用命令：
+  nv              打开总控台
+  nv add          添加配置，进入协议菜单
+  nv status       查看当前配置和服务状态
+  nv run          运行管理
+  nv update       更新 nv 命令
+  nv uninstall    卸载 nat-v2ray
+
+说明：
+  TLS 类协议使用 DNS-01 手动 TXT 验证，不依赖 80/443 入站端口。
+  NAT 面板必须按协议类型转发 TCP、UDP 或端口范围。
+EOF
+}
+
+other_tools() {
+  local choice
+
+  while true; do
+    cat <<EOF
+
+其他：
+  1) TLS-TXT-Check
+  2) 查看监听端口
+  3) 安装/修复 nv 命令
+  0) 返回
+EOF
+    printf '请选择 [0-3]: ' >&2
+    read -r choice
+    choice="${choice:-0}"
+    case "${choice}" in
+      1) txt_check_tool ;;
+      2) ss -lntup 2>/dev/null || true ;;
+      3) install_nv_command && green "nv 已安装：${NV_BIN}" ;;
+      0) return 0 ;;
+      *) yellow "无效选项" ;;
+    esac
+  done
+}
+
+show_about() {
+  cat <<EOF
+
+nat-v2ray ${VERSION}
+仓库：${REPO_URL}
+命令：nv
+
+面向 NAT VPS 的多协议一键脚本，支持 HY2、Reality、VLESS、VMess、Trojan、Shadowsocks。
+EOF
+}
+
+control_panel() {
+  local choice
+
+  ensure_nv_command
+  banner
+  while true; do
+    show_control_panel
+    printf '请选择 [1-10]: ' >&2
+    read -r choice
+    choice="${choice:-1}"
+    case "${choice}" in
+      1) protocol_menu ;;
+      2) change_config ;;
+      3) view_config ;;
+      4) delete_config ;;
+      5) runtime_management ;;
+      6) update_nv_command ;;
+      7) uninstall_nat_v2ray ;;
+      8) show_help ;;
+      9) other_tools ;;
+      10) show_about ;;
+      0) exit 0 ;;
+      *) yellow "无效选项" ;;
+    esac
+  done
+}
+
+protocol_menu() {
   local choice
   banner
   while true; do
@@ -5238,6 +5535,41 @@ main() {
       *) yellow "无效选项" ;;
     esac
   done
+}
+
+main() {
+  local command="${1:-}"
+
+  ensure_nv_command
+
+  case "${command}" in
+    add|install|protocol)
+      protocol_menu
+      ;;
+    status|view)
+      view_config
+      ;;
+    run|runtime)
+      runtime_management
+      ;;
+    update)
+      update_nv_command
+      ;;
+    uninstall)
+      uninstall_nat_v2ray
+      ;;
+    help|-h|--help)
+      show_help
+      ;;
+    panel|menu|"")
+      control_panel
+      ;;
+    *)
+      yellow "未知命令：${command}"
+      show_help
+      exit 1
+      ;;
+  esac
 }
 
 if [ "${NAT_V2RAY_LIB_ONLY:-0}" != "1" ]; then

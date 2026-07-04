@@ -83,6 +83,38 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("39) Trojan-XHTTP-TLS", script)
         self.assertNotIn("2) VLESS Reality - TCP，不需要 TLS 证书", script)
 
+    def test_nv_control_panel_is_available(self) -> None:
+        script = read_install_script()
+
+        self.assertIn('NV_BIN="/usr/local/bin/nv"', script)
+        self.assertIn("install_nv_command()", script)
+        self.assertIn("show_control_panel()", script)
+        self.assertIn("control_panel()", script)
+        self.assertIn("protocol_menu()", script)
+        self.assertIn("------------- nat-v2ray ${VERSION} -------------", script)
+        self.assertIn("命令: nv", script)
+        self.assertIn("1) 添加配置", script)
+        self.assertIn("2) 更改配置", script)
+        self.assertIn("3) 查看配置", script)
+        self.assertIn("4) 删除配置", script)
+        self.assertIn("5) 运行管理", script)
+        self.assertIn("6) 更新", script)
+        self.assertIn("7) 卸载", script)
+        self.assertIn("8) 帮助", script)
+        self.assertIn("9) 其他", script)
+        self.assertIn("10) 关于", script)
+        self.assertIn("请选择 [1-10]:", script)
+        self.assertIn("add|install|protocol)", script)
+        self.assertIn("install -m 0755", script)
+
+    def test_nv_command_is_ensured_before_subcommand_dispatch(self) -> None:
+        script = read_install_script()
+        main_start = script.rindex("\nmain() {") + 1
+        main_end = script.index('if [ "${NAT_V2RAY_LIB_ONLY:-0}" != "1" ]; then', main_start)
+        main_body = script[main_start:main_end]
+
+        self.assertIn('ensure_nv_command\n\n  case "${command}" in', main_body)
+
     def test_reality_supports_xray_config_and_share_uri(self) -> None:
         script = read_install_script()
 

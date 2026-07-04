@@ -23,6 +23,12 @@ curl -fsSL -o install.sh https://raw.githubusercontent.com/dagve11/nat-v2ray/mai
 bash install.sh
 ```
 
+首次运行后脚本会安装/修复 `nv` 命令。之后可以直接输入：
+
+```bash
+nv
+```
+
 如果服务器无法访问 `raw.githubusercontent.com`，可以克隆仓库后执行：
 
 ```bash
@@ -43,6 +49,40 @@ bash install.sh
 | 兼容 Shadowsocks 客户端 | Shadowsocks |
 
 公网长期使用优先选择 `HY2`、`Reality` 或 TLS 类协议。非 TLS 的 TCP/WS/gRPC/HTTPUpgrade/XHTTP 更适合临时测试或兼容旧客户端。
+
+## nv 总控台
+
+`nv` 会打开 233boy 风格的总控台：
+
+```text
+------------- nat-v2ray 0.15.0 -------------
+Xray 26.3.27: running
+Hysteria2: not installed
+命令: nv
+仓库: https://github.com/dagve11/nat-v2ray
+
+ 1) 添加配置
+ 2) 更改配置
+ 3) 查看配置
+ 4) 删除配置
+ 5) 运行管理
+ 6) 更新
+ 7) 卸载
+ 8) 帮助
+ 9) 其他
+10) 关于
+ 0) 退出
+```
+
+常用子命令：
+
+```bash
+nv add        # 添加配置，进入协议菜单
+nv status     # 查看当前配置和服务状态
+nv run        # 启动、停止、重启服务
+nv update     # 更新 nv 命令
+nv uninstall  # 卸载 nat-v2ray
+```
 
 ## 支持协议
 
