@@ -254,8 +254,8 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('"type": "mkcp-aes128gcm"', script)
         self.assertIn('"password": "${seed}"', script)
         self.assertIn('"type": "mkcp-original"', script)
+        self.assertIn("render_legacy_kcp_settings()", script)
         self.assertNotIn("mkcp-legacy", script)
-        self.assertNotIn('"seed": "${seed}"', script)
         self.assertIn('"allocate"', script)
         self.assertIn('"strategy": "random"', script)
         self.assertIn("'kcp'", script)
@@ -370,6 +370,61 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("我确认要停用占用端口的 systemd 服务", script)
         self.assertIn("请输入要停用的 systemd 服务名", script)
         self.assertNotIn("caddy", script.lower())
+
+    def test_xray_profiles_enable_multiple_configs_without_caddy(self) -> None:
+        script = read_install_script()
+
+        self.assertIn('XRAY_PROFILE_DIR="${XRAY_CONFIG_DIR}/profiles"', script)
+        self.assertIn("xray_profile_name()", script)
+        self.assertIn("register_xray_profile()", script)
+        self.assertIn("rebuild_xray_config()", script)
+        self.assertIn("append_xray_uri_and_register()", script)
+        self.assertIn("XRAY_PROFILE_NAME=", script)
+        self.assertIn("XRAY_URI=", script)
+        self.assertIn('(.inbounds[]?.tag) = $tag', script)
+        self.assertIn("jq -s", script)
+        self.assertIn("每个 Xray 节点会保存为独立 profile", script)
+        self.assertNotIn("caddy", script.lower())
+
+    def test_nv_shortcuts_manage_profiles_and_links(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("profile_info()", script)
+        self.assertIn("profile_url()", script)
+        self.assertIn("profile_qr()", script)
+        self.assertIn("delete_xray_profile()", script)
+        self.assertIn("select_xray_profile()", script)
+        self.assertIn("nv info [name]", script)
+        self.assertIn("nv url [name]", script)
+        self.assertIn("nv qr [name]", script)
+        self.assertIn("nv del [name]", script)
+        self.assertIn("info)", script)
+        self.assertIn("url)", script)
+        self.assertIn("qr)", script)
+        self.assertIn("del|delete|rm)", script)
+
+    def test_nv_test_and_update_core_geo_are_available(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("xray_test_run()", script)
+        self.assertIn('"${XRAY_BIN}" run -test -config "${XRAY_CONFIG_FILE}"', script)
+        self.assertIn("journalctl -u xray", script)
+        self.assertIn("update_xray_core()", script)
+        self.assertIn("update_hysteria_core()", script)
+        self.assertIn("update_geo_assets()", script)
+        self.assertIn("nv update core", script)
+        self.assertIn("nv update geo", script)
+        self.assertIn("test|check)", script)
+
+    def test_xray_version_compatibility_helpers_exist(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("version_ge()", script)
+        self.assertIn("xray_core_version_number()", script)
+        self.assertIn("is_xray_finalmask_supported()", script)
+        self.assertIn("render_kcp_finalmask_udp()", script)
+        self.assertIn("render_legacy_kcp_settings()", script)
+        self.assertIn("26.1.24", script)
 
 
 if __name__ == "__main__":

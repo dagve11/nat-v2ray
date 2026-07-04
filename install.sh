@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.16.0"
+VERSION="0.17.0"
 PROJECT_NAME="nat-v2ray"
 REPO_URL="https://github.com/dagve11/nat-v2ray"
 SCRIPT_URL="https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install.sh"
@@ -17,6 +17,7 @@ XRAY_BIN="/usr/local/bin/xray"
 XRAY_CONFIG_DIR="/usr/local/etc/xray"
 XRAY_CONFIG_FILE="${XRAY_CONFIG_DIR}/config.json"
 XRAY_ENV_FILE="${XRAY_CONFIG_DIR}/nat-v2ray.env"
+XRAY_PROFILE_DIR="${XRAY_CONFIG_DIR}/profiles"
 XRAY_SERVICE_FILE="/etc/systemd/system/xray.service"
 CERT_BASE_DIR="/etc/nat-v2ray/certs"
 ACME_SH="${HOME}/.acme.sh/acme.sh"
@@ -203,6 +204,46 @@ normalise_kcp_header_type() {
   fi
 }
 
+version_ge() {
+  local current="$1"
+  local required="$2"
+
+  [ "$(printf '%s\n%s\n' "${required}" "${current}" | sort -V | head -n1)" = "${required}" ]
+}
+
+xray_core_version_number() {
+  if [ -x "${XRAY_BIN}" ]; then
+    "${XRAY_BIN}" version 2>/dev/null | awk 'NR == 1 { print $2; exit }'
+  else
+    printf '0.0.0\n'
+  fi
+}
+
+is_xray_finalmask_supported() {
+  version_ge "$(xray_core_version_number)" '26.1.24'
+}
+
+render_legacy_kcp_settings() {
+  local header_type="$1"
+  local seed="$2"
+  local legacy_header
+  legacy_header="$(normalise_kcp_header_type "${header_type}")"
+  legacy_header="${legacy_header:-none}"
+
+  cat <<EOF
+        "kcpSettings": {
+          "mtu": 1350,
+          "tti": 50,
+          "uplinkCapacity": 5,
+          "downlinkCapacity": 20,
+          "seed": "${seed}",
+          "header": {
+            "type": "${legacy_header}"
+          }
+        }
+EOF
+}
+
 render_kcp_finalmask_udp() {
   local header_type="$1"
   local seed="$2"
@@ -234,6 +275,29 @@ EOF
               "settings": {}
             }
 EOF
+  fi
+}
+
+render_kcp_transport_settings() {
+  local header_type="$1"
+  local seed="$2"
+
+  if is_xray_finalmask_supported; then
+    cat <<EOF
+        "kcpSettings": {
+          "mtu": 1350,
+          "tti": 50,
+          "uplinkCapacity": 5,
+          "downlinkCapacity": 20
+        },
+        "finalmask": {
+          "udp": [
+$(render_kcp_finalmask_udp "${header_type}" "${seed}")
+          ]
+        }
+EOF
+  else
+    render_legacy_kcp_settings "${header_type}" "${seed}"
   fi
 }
 
@@ -296,7 +360,7 @@ install_base_packages() {
 
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y curl openssl ca-certificates iproute2 dnsutils unzip
+  apt-get install -y curl openssl ca-certificates iproute2 dnsutils unzip jq
 }
 
 hysteria_asset_name() {
@@ -352,6 +416,8 @@ install_xray_binary() {
   if [ -f "${work_dir}/geosite.dat" ]; then
     install -m 0644 "${work_dir}/geosite.dat" "/usr/local/share/xray/geosite.dat" 2>/dev/null || true
   fi
+
+  migrate_legacy_xray_profile
 }
 
 write_xray_service() {
@@ -373,6 +439,275 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
+}
+
+ensure_xray_profile_dirs() {
+  mkdir -p "${XRAY_CONFIG_DIR}" "${XRAY_PROFILE_DIR}"
+  chmod 700 "${XRAY_CONFIG_DIR}" "${XRAY_PROFILE_DIR}" 2>/dev/null || true
+}
+
+xray_env_value() {
+  local key="$1"
+  local env_file="${2:-${XRAY_ENV_FILE}}"
+
+  [ -f "${env_file}" ] || return 0
+  awk -v key="${key}" '
+    index($0, key "=") == 1 {
+      value = substr($0, length(key) + 2)
+    }
+    END {
+      if (value != "") print value
+    }
+  ' "${env_file}"
+}
+
+sanitize_profile_name() {
+  tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//'
+}
+
+xray_profile_name() {
+  local protocol
+  local public_port
+  local public_range
+  local host
+  local base
+
+  protocol="$(xray_env_value PROTOCOL)"
+  public_port="$(xray_env_value XRAY_PUBLIC_PORT)"
+  public_range="$(xray_env_value XRAY_PUBLIC_PORT_RANGE)"
+  host="$(xray_env_value XRAY_HOST)"
+  base="${protocol:-xray}-${public_port:-${public_range:-unknown}}-${host:-server}"
+  base="$(printf '%s' "${base}" | sanitize_profile_name)"
+  printf '%s\n' "${base:-xray-profile}"
+}
+
+xray_profile_names() {
+  local env_file
+
+  [ -d "${XRAY_PROFILE_DIR}" ] || return 0
+  for env_file in "${XRAY_PROFILE_DIR}"/*.env; do
+    [ -f "${env_file}" ] || continue
+    basename "${env_file}" .env
+  done | sort
+}
+
+xray_profile_count() {
+  xray_profile_names | wc -l | tr -d ' '
+}
+
+rebuild_xray_config() {
+  local profile_jsons=()
+  local profile_json
+  local temp_file
+
+  ensure_xray_profile_dirs
+  command -v jq >/dev/null 2>&1 || die "缺少 jq，无法重建 Xray 多配置"
+
+  for profile_json in "${XRAY_PROFILE_DIR}"/*.json; do
+    [ -f "${profile_json}" ] || continue
+    profile_jsons+=("${profile_json}")
+  done
+
+  temp_file="${XRAY_CONFIG_FILE}.tmp.$$"
+  if [ "${#profile_jsons[@]}" -eq 0 ]; then
+    jq -n '{
+      log: {loglevel: "warning"},
+      inbounds: [],
+      outbounds: [
+        {protocol: "freedom", tag: "direct"},
+        {protocol: "blackhole", tag: "blocked"}
+      ]
+    }' > "${temp_file}"
+  else
+    jq -s '{
+      log: {loglevel: "warning"},
+      inbounds: ([.[].inbounds[]?]),
+      outbounds: [
+        {protocol: "freedom", tag: "direct"},
+        {protocol: "blackhole", tag: "blocked"}
+      ]
+    }' "${profile_jsons[@]}" > "${temp_file}"
+  fi
+
+  install -m 600 "${temp_file}" "${XRAY_CONFIG_FILE}"
+  rm -f "${temp_file}"
+}
+
+sync_latest_xray_env() {
+  local latest_env
+
+  [ -d "${XRAY_PROFILE_DIR}" ] || return 0
+  latest_env="$(ls -t "${XRAY_PROFILE_DIR}"/*.env 2>/dev/null | head -n1 || true)"
+  if [ -n "${latest_env}" ]; then
+    install -m 600 "${latest_env}" "${XRAY_ENV_FILE}"
+  else
+    rm -f "${XRAY_ENV_FILE}"
+  fi
+}
+
+register_xray_profile() {
+  local profile_name
+  local profile_config
+  local profile_env
+  local temp_config
+  local temp_env
+
+  ensure_xray_profile_dirs
+  command -v jq >/dev/null 2>&1 || die "缺少 jq，无法注册 Xray profile"
+  [ -f "${XRAY_CONFIG_FILE}" ] || die "缺少 Xray 配置，无法注册 profile"
+  [ -f "${XRAY_ENV_FILE}" ] || die "缺少 Xray 环境文件，无法注册 profile"
+
+  profile_name="$(xray_profile_name)"
+  profile_config="${XRAY_PROFILE_DIR}/${profile_name}.json"
+  profile_env="${XRAY_PROFILE_DIR}/${profile_name}.env"
+  temp_config="${profile_config}.tmp.$$"
+  temp_env="${XRAY_ENV_FILE}.tmp.$$"
+
+  jq --arg tag "${profile_name}" '(.inbounds[]?.tag) = $tag' "${XRAY_CONFIG_FILE}" > "${temp_config}"
+  install -m 600 "${temp_config}" "${profile_config}"
+  rm -f "${temp_config}"
+  grep -v '^XRAY_PROFILE_NAME=' "${XRAY_ENV_FILE}" > "${temp_env}" || true
+  printf 'XRAY_PROFILE_NAME=%s\n' "${profile_name}" >> "${temp_env}"
+  install -m 600 "${temp_env}" "${XRAY_ENV_FILE}"
+  rm -f "${temp_env}"
+  install -m 600 "${XRAY_ENV_FILE}" "${profile_env}"
+
+  rebuild_xray_config
+}
+
+append_xray_uri_and_register() {
+  local uri="$1"
+  local temp_env
+
+  [ -f "${XRAY_ENV_FILE}" ] || die "缺少 Xray 环境文件，无法保存分享链接"
+  temp_env="${XRAY_ENV_FILE}.tmp.$$"
+  grep -v '^XRAY_URI=' "${XRAY_ENV_FILE}" > "${temp_env}" || true
+  printf 'XRAY_URI=%s\n' "${uri}" >> "${temp_env}"
+  install -m 600 "${temp_env}" "${XRAY_ENV_FILE}"
+  rm -f "${temp_env}"
+  register_xray_profile
+  systemctl restart xray
+}
+
+migrate_legacy_xray_profile() {
+  if [ "$(xray_profile_count)" -gt 0 ]; then
+    return 0
+  fi
+  if [ ! -f "${XRAY_CONFIG_FILE}" ] || [ ! -f "${XRAY_ENV_FILE}" ]; then
+    return 0
+  fi
+  if grep -q '^XRAY_PROFILE_NAME=' "${XRAY_ENV_FILE}" 2>/dev/null; then
+    return 0
+  fi
+
+  yellow "检测到旧版单 Xray 配置，先迁移为 profile 以保留现有节点。"
+  register_xray_profile
+}
+
+select_xray_profile() {
+  local requested="${1:-}"
+  local profiles=()
+  local index=1
+  local profile
+  local choice
+
+  if [ -n "${requested}" ]; then
+    requested="${requested%.env}"
+    requested="${requested%.json}"
+    if [ -f "${XRAY_PROFILE_DIR}/${requested}.env" ]; then
+      printf '%s\n' "${requested}"
+      return 0
+    fi
+    die "未找到 Xray profile：${requested}"
+  fi
+
+  mapfile -t profiles < <(xray_profile_names)
+  if [ "${#profiles[@]}" -eq 0 ]; then
+    die "当前没有 Xray profile"
+  fi
+  if [ "${#profiles[@]}" -eq 1 ]; then
+    printf '%s\n' "${profiles[0]}"
+    return 0
+  fi
+
+  echo "请选择 Xray profile：" >&2
+  for profile in "${profiles[@]}"; do
+    printf '  %s) %s\n' "${index}" "${profile}" >&2
+    index=$((index + 1))
+  done
+  printf '请选择 [1]: ' >&2
+  read -r choice
+  choice="${choice:-1}"
+  if ! [[ "${choice}" =~ ^[0-9]+$ ]] || [ "${choice}" -lt 1 ] || [ "${choice}" -gt "${#profiles[@]}" ]; then
+    die "无效 profile 选项"
+  fi
+  printf '%s\n' "${profiles[$((choice - 1))]}"
+}
+
+profile_info() {
+  local profile_name
+  local env_file
+  local uri
+
+  require_linux
+  profile_name="$(select_xray_profile "${1:-}")"
+  env_file="${XRAY_PROFILE_DIR}/${profile_name}.env"
+  uri="$(xray_env_value XRAY_URI "${env_file}")"
+
+  echo
+  echo "------------- ${profile_name} -------------"
+  echo "协议: $(xray_env_value PROTOCOL "${env_file}")"
+  echo "地址: $(xray_env_value XRAY_HOST "${env_file}")"
+  echo "本机监听端口: $(xray_env_value XRAY_LISTEN_PORT "${env_file}")$(xray_env_value XRAY_LISTEN_PORT_RANGE "${env_file}")"
+  echo "外网连接端口: $(xray_env_value XRAY_PUBLIC_PORT "${env_file}")$(xray_env_value XRAY_PUBLIC_PORT_RANGE "${env_file}")"
+  echo "profile: ${env_file}"
+  if [ -n "${uri}" ]; then
+    echo "链接: ${uri}"
+  else
+    yellow "链接未记录，请重新安装或使用 nv url 查看新配置"
+  fi
+}
+
+profile_url() {
+  local profile_name
+  local env_file
+  local uri
+
+  require_linux
+  profile_name="$(select_xray_profile "${1:-}")"
+  env_file="${XRAY_PROFILE_DIR}/${profile_name}.env"
+  uri="$(xray_env_value XRAY_URI "${env_file}")"
+  [ -n "${uri}" ] || die "profile ${profile_name} 没有记录分享链接"
+  printf '%s\n' "${uri}"
+}
+
+profile_qr() {
+  local uri
+
+  uri="$(profile_url "${1:-}")"
+  if command -v qrencode >/dev/null 2>&1; then
+    qrencode -t ANSIUTF8 "${uri}"
+  else
+    yellow "未安装 qrencode，直接输出链接："
+    printf '%s\n' "${uri}"
+  fi
+}
+
+delete_xray_profile() {
+  local profile_name
+
+  require_root
+  require_linux
+  profile_name="$(select_xray_profile "${1:-}")"
+  rm -f "${XRAY_PROFILE_DIR}/${profile_name}.json" "${XRAY_PROFILE_DIR}/${profile_name}.env"
+  rebuild_xray_config
+  sync_latest_xray_env
+  if [ "$(xray_profile_count)" -gt 0 ]; then
+    systemctl restart xray || true
+  else
+    systemctl stop xray >/dev/null 2>&1 || true
+  fi
+  green "已删除 Xray profile：${profile_name}"
 }
 
 random_uuid() {
@@ -785,6 +1120,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_reality_uri "${server_host}" "${public_port}" "${uuid}" "${server_name}" "${public_key}" "${short_id}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "Reality 安装完成"
@@ -2273,17 +2609,7 @@ render_vless_mkcp_config() {
       "streamSettings": {
         "network": "kcp",
         "security": "none",
-        "kcpSettings": {
-          "mtu": 1350,
-          "tti": 50,
-          "uplinkCapacity": 5,
-          "downlinkCapacity": 20
-        },
-        "finalmask": {
-          "udp": [
-$(render_kcp_finalmask_udp "${header_type}" "${seed}")
-          ]
-        }
+$(render_kcp_transport_settings "${header_type}" "${seed}")
       }
     }
   ],
@@ -2325,17 +2651,7 @@ render_vless_mkcp_dynamic_config() {
       "streamSettings": {
         "network": "kcp",
         "security": "none",
-        "kcpSettings": {
-          "mtu": 1350,
-          "tti": 50,
-          "uplinkCapacity": 5,
-          "downlinkCapacity": 20
-        },
-        "finalmask": {
-          "udp": [
-$(render_kcp_finalmask_udp "${header_type}" "${seed}")
-          ]
-        }
+$(render_kcp_transport_settings "${header_type}" "${seed}")
       },
       "allocate": {
         "strategy": "random",
@@ -2778,17 +3094,7 @@ render_vmess_mkcp_config() {
       "streamSettings": {
         "network": "kcp",
         "security": "none",
-        "kcpSettings": {
-          "mtu": 1350,
-          "tti": 50,
-          "uplinkCapacity": 5,
-          "downlinkCapacity": 20
-        },
-        "finalmask": {
-          "udp": [
-$(render_kcp_finalmask_udp "${header_type}" "${seed}")
-          ]
-        }
+$(render_kcp_transport_settings "${header_type}" "${seed}")
       }
     }
   ],
@@ -2830,17 +3136,7 @@ render_vmess_mkcp_dynamic_config() {
       "streamSettings": {
         "network": "kcp",
         "security": "none",
-        "kcpSettings": {
-          "mtu": 1350,
-          "tti": 50,
-          "uplinkCapacity": 5,
-          "downlinkCapacity": 20
-        },
-        "finalmask": {
-          "udp": [
-$(render_kcp_finalmask_udp "${header_type}" "${seed}")
-          ]
-        }
+$(render_kcp_transport_settings "${header_type}" "${seed}")
       },
       "allocate": {
         "strategy": "random",
@@ -2961,6 +3257,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vless_uri "VLESS-TCP-${server_host}" "${server_host}" "${public_port}" "${uuid}" 'tcp' '' '' 'none')"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VLESS TCP 安装完成"
@@ -3027,6 +3324,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vless_uri "VLESS-WS-${server_host}" "${server_host}" "${public_port}" "${uuid}" 'ws' "${ws_path}" "${host_header}" 'none')"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VLESS WS 安装完成"
@@ -3093,6 +3391,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vless_uri "VLESS-HTTPUpgrade-${server_host}" "${server_host}" "${public_port}" "${uuid}" 'httpupgrade' "${http_path}" "${host_header}" 'none')"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VLESS HTTPUpgrade 安装完成"
@@ -3156,6 +3455,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vless_grpc_uri "${server_host}" "${public_port}" "${uuid}" "${service_name}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VLESS gRPC 安装完成"
@@ -3222,6 +3522,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vless_xhttp_uri "${server_host}" "${public_port}" "${uuid}" "${xhttp_path}" "${xhttp_mode}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VLESS XHTTP 安装完成"
@@ -3301,6 +3602,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vless_xhttp_tls_uri "${server_host}" "${public_port}" "${uuid}" "${domain}" "${xhttp_path}" "${xhttp_mode}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VLESS XHTTP TLS 安装完成"
@@ -3360,6 +3662,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vless_uri "VLESS-TCP-dynamic-${server_host}" "${server_host}" "${public_port_range}" "${uuid}" 'tcp' '' '' 'none')"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VLESS TCP dynamic port 安装完成"
@@ -3424,6 +3727,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vless_uri "VLESS-WS-dynamic-${server_host}" "${server_host}" "${public_port_range}" "${uuid}" 'ws' "${ws_path}" "${host_header}" 'none')"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VLESS WS dynamic port 安装完成"
@@ -3489,6 +3793,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vless_uri "VLESS-mKCP-${server_host}" "${server_host}" "${public_port}" "${uuid}" 'kcp' '' '' 'none' "${seed}" "${header_type}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VLESS mKCP 安装完成"
@@ -3556,6 +3861,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vless_uri "VLESS-mKCP-dynamic-${server_host}" "${server_host}" "${public_port_range}" "${uuid}" 'kcp' '' '' 'none' "${seed}" "${header_type}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VLESS mKCP dynamic port 安装完成"
@@ -3628,6 +3934,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vless_tcp_tls_uri "${server_host}" "${public_port}" "${uuid}" "${domain}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VLESS TCP TLS 安装完成"
@@ -3701,6 +4008,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vless_ws_tls_uri "${server_host}" "${public_port}" "${uuid}" "${domain}" "${ws_path}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VLESS WS TLS 安装完成"
@@ -3771,6 +4079,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_trojan_tls_uri "${server_host}" "${public_port}" "${password}" "${domain}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "Trojan TLS 安装完成"
@@ -3828,6 +4137,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vmess_link "VMess-TCP-${server_host}" "${server_host}" "${public_port}" "${uuid}" 'tcp' '' '')"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VMess TCP 安装完成"
@@ -3891,6 +4201,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vmess_link "VMess-WS-${server_host}" "${server_host}" "${public_port}" "${uuid}" 'ws' "${ws_path}" "${host_header}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VMess WS 安装完成"
@@ -3954,6 +4265,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vmess_link "VMess-HTTPUpgrade-${server_host}" "${server_host}" "${public_port}" "${uuid}" 'httpupgrade' "${http_path}" "${host_header}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VMess HTTPUpgrade 安装完成"
@@ -4017,6 +4329,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vmess_link "VMess-gRPC-${server_host}" "${server_host}" "${public_port}" "${uuid}" 'grpc' "${service_name}" '')"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VMess gRPC 安装完成"
@@ -4083,6 +4396,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vmess_link "VMess-XHTTP-${server_host}" "${server_host}" "${public_port}" "${uuid}" 'xhttp' "${xhttp_path}" "${xhttp_mode}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VMess XHTTP 安装完成"
@@ -4162,6 +4476,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vmess_link "VMess-XHTTP-TLS-${server_host}" "${server_host}" "${public_port}" "${uuid}" 'xhttp' "${xhttp_path}" "${xhttp_mode}" 'tls')"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VMess XHTTP TLS 安装完成"
@@ -4221,6 +4536,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vmess_link "VMess-TCP-dynamic-${server_host}" "${server_host}" "${public_port_range}" "${uuid}" 'tcp' '' '')"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VMess TCP dynamic port 安装完成"
@@ -4285,6 +4601,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vmess_link "VMess-WS-dynamic-${server_host}" "${server_host}" "${public_port_range}" "${uuid}" 'ws' "${ws_path}" "${host_header}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VMess WS dynamic port 安装完成"
@@ -4350,6 +4667,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vmess_link "VMess-mKCP-${server_host}" "${server_host}" "${public_port}" "${uuid}" 'kcp' "${seed}" "${header_type}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VMess mKCP 安装完成"
@@ -4417,6 +4735,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vmess_link "VMess-mKCP-dynamic-${server_host}" "${server_host}" "${public_port_range}" "${uuid}" 'kcp' "${seed}" "${header_type}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VMess mKCP dynamic port 安装完成"
@@ -4476,6 +4795,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_trojan_uri "Trojan-TCP-${server_host}" "${server_host}" "${public_port}" "${password}" 'tcp')"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "Trojan TCP 安装完成"
@@ -4542,6 +4862,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_trojan_uri "Trojan-WS-${server_host}" "${server_host}" "${public_port}" "${password}" 'ws' "${ws_path}" "${host_header}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "Trojan WS 安装完成"
@@ -4608,6 +4929,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_trojan_uri "Trojan-HTTPUpgrade-${server_host}" "${server_host}" "${public_port}" "${password}" 'httpupgrade' "${http_path}" "${host_header}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "Trojan HTTPUpgrade 安装完成"
@@ -4671,6 +4993,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_trojan_uri "Trojan-gRPC-${server_host}" "${server_host}" "${public_port}" "${password}" 'grpc' '' '' "${service_name}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "Trojan gRPC 安装完成"
@@ -4737,6 +5060,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_trojan_uri "Trojan-XHTTP-${server_host}" "${server_host}" "${public_port}" "${password}" 'xhttp' "${xhttp_path}" '' '' "${xhttp_mode}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "Trojan XHTTP 安装完成"
@@ -4816,6 +5140,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_trojan_xhttp_tls_uri "${server_host}" "${public_port}" "${password}" "${domain}" "${xhttp_path}" "${xhttp_mode}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "Trojan XHTTP TLS 安装完成"
@@ -4879,6 +5204,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_shadowsocks_uri "${server_host}" "${public_port}" "${method}" "${password}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "Shadowsocks 安装完成"
@@ -4949,6 +5275,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vmess_tcp_tls_link "VMess-TCP-TLS-${server_host}" "${server_host}" "${public_port}" "${uuid}" "${domain}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VMess TCP TLS 安装完成"
@@ -5022,6 +5349,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vmess_link "VMess-WS-TLS-${server_host}" "${server_host}" "${public_port}" "${uuid}" 'ws' "${ws_path}" "${domain}" 'tls')"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VMess WS TLS 安装完成"
@@ -5095,6 +5423,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vmess_link "VMess-gRPC-TLS-${server_host}" "${server_host}" "${public_port}" "${uuid}" 'grpc' "${service_name}" "${domain}" 'tls')"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VMess gRPC TLS 安装完成"
@@ -5168,6 +5497,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_vless_grpc_tls_uri "${server_host}" "${public_port}" "${uuid}" "${domain}" "${service_name}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "VLESS gRPC TLS 安装完成"
@@ -5241,6 +5571,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_trojan_ws_tls_uri "${server_host}" "${public_port}" "${password}" "${domain}" "${ws_path}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "Trojan WS TLS 安装完成"
@@ -5314,6 +5645,7 @@ EOF
   systemctl restart xray
 
   uri="$(build_trojan_grpc_tls_uri "${server_host}" "${public_port}" "${password}" "${domain}" "${service_name}")"
+  append_xray_uri_and_register "${uri}"
 
   echo
   green "Trojan gRPC TLS 安装完成"
@@ -5501,32 +5833,64 @@ view_config() {
   require_linux
 
   show_service_status
-  print_file_if_exists "Xray 环境" "${XRAY_ENV_FILE}"
-  print_file_if_exists "Xray 配置" "${XRAY_CONFIG_FILE}"
+  if [ "$(xray_profile_count)" -gt 0 ]; then
+    echo
+    blue "Xray profiles:"
+    xray_profile_names | sed 's/^/  /'
+    echo
+    yellow "每个 Xray 节点会保存为独立 profile；使用 nv info [name] 查看摘要，nv url [name] 输出分享链接。"
+  else
+    print_file_if_exists "Xray 环境" "${XRAY_ENV_FILE}"
+    print_file_if_exists "Xray 配置" "${XRAY_CONFIG_FILE}"
+  fi
   print_file_if_exists "HY2 环境" "${HY2_ENV_FILE}"
   print_file_if_exists "HY2 配置" "${HY2_CONFIG_FILE}"
 }
 
 change_config() {
-  yellow "当前脚本同一时间只管理一份 Xray 配置和一份 HY2 配置。重新安装协议会自动备份旧 Xray 配置。"
+  yellow "Xray 支持多 profile 并存；添加新协议会追加 profile。HY2 当前仍按单实例管理。"
   protocol_menu
 }
 
 delete_config() {
+  local choice
+
   require_root
   require_linux
 
-  yellow "将停止 Xray/HY2 并删除当前配置文件，二进制和 nv 命令会保留。"
-  if ! prompt_yes_no '确认删除当前配置' 'n'; then
-    yellow "已取消"
-    return 0
-  fi
+  cat <<EOF
 
-  systemctl disable --now xray >/dev/null 2>&1 || true
-  systemctl disable --now hysteria-server >/dev/null 2>&1 || true
-  rm -f "${XRAY_CONFIG_FILE}" "${XRAY_ENV_FILE}"
-  rm -f "${HY2_CONFIG_FILE}" "${HY2_ENV_FILE}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}"
-  green "配置已删除"
+删除配置：
+  1) 删除一个 Xray profile
+  2) 删除 HY2 配置
+  3) 删除全部配置
+  0) 返回
+EOF
+  printf '请选择 [0-3]: ' >&2
+  read -r choice
+  choice="${choice:-0}"
+  case "${choice}" in
+    1) delete_xray_profile ;;
+    2)
+      systemctl disable --now hysteria-server >/dev/null 2>&1 || true
+      rm -f "${HY2_CONFIG_FILE}" "${HY2_ENV_FILE}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}"
+      green "HY2 配置已删除"
+      ;;
+    3)
+      if ! prompt_yes_no '确认删除全部配置' 'n'; then
+        yellow "已取消"
+        return 0
+      fi
+      systemctl disable --now xray >/dev/null 2>&1 || true
+      systemctl disable --now hysteria-server >/dev/null 2>&1 || true
+      rm -f "${XRAY_CONFIG_FILE}" "${XRAY_ENV_FILE}"
+      rm -f "${XRAY_PROFILE_DIR}"/*.json "${XRAY_PROFILE_DIR}"/*.env 2>/dev/null || true
+      rm -f "${HY2_CONFIG_FILE}" "${HY2_ENV_FILE}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}"
+      green "全部配置已删除"
+      ;;
+    0) return 0 ;;
+    *) yellow "无效选项" ;;
+  esac
 }
 
 runtime_management() {
@@ -5546,9 +5910,10 @@ runtime_management() {
   5) 停止 Hysteria2
   6) 重启 Hysteria2
   7) 查看状态
+  8) 测试运行
   0) 返回
 EOF
-    printf '请选择 [0-7]: ' >&2
+    printf '请选择 [0-8]: ' >&2
     read -r choice
     choice="${choice:-7}"
     case "${choice}" in
@@ -5559,6 +5924,7 @@ EOF
       5) systemctl stop hysteria-server ;;
       6) systemctl restart hysteria-server ;;
       7) show_service_status ;;
+      8) xray_test_run ;;
       0) return 0 ;;
       *) yellow "无效选项" ;;
     esac
@@ -5578,6 +5944,76 @@ update_nv_command() {
   green "nv 已更新：${NV_BIN}"
 }
 
+update_xray_core() {
+  require_root
+  require_linux
+  install_base_packages
+  install_xray_binary
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    systemctl restart xray || true
+  fi
+  green "Xray core 已更新"
+}
+
+update_hysteria_core() {
+  require_root
+  require_linux
+  install_base_packages
+  install_hysteria_binary
+  if [ -f "${HY2_CONFIG_FILE}" ]; then
+    systemctl restart hysteria-server || true
+  fi
+  green "Hysteria2 core 已更新"
+}
+
+update_geo_assets() {
+  require_root
+  require_linux
+
+  mkdir -p /usr/local/share/xray
+  curl -fL --retry 3 --connect-timeout 20 \
+    -o /usr/local/share/xray/geoip.dat \
+    https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
+  curl -fL --retry 3 --connect-timeout 20 \
+    -o /usr/local/share/xray/geosite.dat \
+    https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
+  systemctl restart xray >/dev/null 2>&1 || true
+  green "geoip.dat / geosite.dat 已更新"
+}
+
+update_nat_v2ray() {
+  local target="${1:-script}"
+
+  case "${target}" in
+    script|sh|nv) update_nv_command ;;
+    core|xray) update_xray_core ;;
+    hy2|hysteria|hysteria2) update_hysteria_core ;;
+    geo|dat) update_geo_assets ;;
+    *)
+      die "未知更新目标：${target}，可用：script/core/hy2/geo"
+      ;;
+  esac
+}
+
+xray_test_run() {
+  require_linux
+  if [ ! -x "${XRAY_BIN}" ]; then
+    die "Xray 未安装"
+  fi
+  if [ ! -f "${XRAY_CONFIG_FILE}" ]; then
+    die "Xray 配置不存在"
+  fi
+
+  if "${XRAY_BIN}" run -test -config "${XRAY_CONFIG_FILE}"; then
+    green "Xray 配置测试通过"
+    return 0
+  fi
+
+  red "Xray 配置测试失败，最近日志如下："
+  journalctl -u xray -n 80 --no-pager || true
+  return 1
+}
+
 uninstall_nat_v2ray() {
   require_root
   require_linux
@@ -5593,6 +6029,7 @@ uninstall_nat_v2ray() {
   rm -f "${XRAY_SERVICE_FILE}" "${HY2_SERVICE_FILE}"
   rm -f "${XRAY_BIN}" "${HYSTERIA_BIN}" "${NV_BIN}"
   rm -f "${XRAY_CONFIG_FILE}" "${XRAY_ENV_FILE}"
+  rm -rf "${XRAY_PROFILE_DIR}"
   rm -f "${HY2_CONFIG_FILE}" "${HY2_ENV_FILE}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}"
   rm -rf "${CERT_BASE_DIR}"
   systemctl daemon-reload >/dev/null 2>&1 || true
@@ -5605,12 +6042,21 @@ show_help() {
 常用命令：
   nv              打开总控台
   nv add          添加配置，进入协议菜单
+  nv info [name]  查看 Xray profile 摘要
+  nv url [name]   输出 Xray profile 分享链接
+  nv qr [name]    输出 Xray profile 二维码
+  nv del [name]   删除 Xray profile
   nv status       查看当前配置和服务状态
   nv run          运行管理
-  nv update       更新 nv 命令
+  nv test         测试 Xray 配置
+  nv update       更新 nv 命令，等同 nv update script
+  nv update core  更新 Xray core
+  nv update hy2   更新 Hysteria2 core
+  nv update geo   更新 geoip.dat / geosite.dat
   nv uninstall    卸载 nat-v2ray
 
 说明：
+  每个 Xray 节点会保存为独立 profile，并自动重建总配置以便多节点同时运行。
   TLS 类协议使用 DNS-01 手动 TXT 验证，不依赖 80/443 入站端口。
   安装时会分别询问本机监听端口和外网连接端口。
   服务端配置监听本机端口，分享链接使用外网连接端口。
@@ -5628,15 +6074,17 @@ other_tools() {
   1) TLS-TXT-Check
   2) 查看监听端口
   3) 安装/修复 nv 命令
+  4) 测试 Xray 配置
   0) 返回
 EOF
-    printf '请选择 [0-3]: ' >&2
+    printf '请选择 [0-4]: ' >&2
     read -r choice
     choice="${choice:-0}"
     case "${choice}" in
       1) txt_check_tool ;;
       2) ss -lntup 2>/dev/null || true ;;
       3) install_nv_command && green "nv 已安装：${NV_BIN}" ;;
+      4) xray_test_run ;;
       0) return 0 ;;
       *) yellow "无效选项" ;;
     esac
@@ -5737,6 +6185,7 @@ protocol_menu() {
 
 main() {
   local command="${1:-}"
+  local target="${2:-}"
 
   ensure_nv_command
 
@@ -5747,11 +6196,26 @@ main() {
     status|view)
       view_config
       ;;
+    i|info)
+      profile_info "${target}"
+      ;;
+    url)
+      profile_url "${target}"
+      ;;
+    qr)
+      profile_qr "${target}"
+      ;;
+    del|delete|rm)
+      delete_xray_profile "${target}"
+      ;;
     run|runtime)
       runtime_management
       ;;
+    test|check)
+      xray_test_run
+      ;;
     update)
-      update_nv_command
+      update_nat_v2ray "${target:-script}"
       ;;
     uninstall)
       uninstall_nat_v2ray

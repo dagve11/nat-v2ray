@@ -55,7 +55,7 @@ bash install.sh
 `nv` 会打开 233boy 风格的总控台：
 
 ```text
-------------- nat-v2ray 0.16.0 -------------
+------------- nat-v2ray 0.17.0 -------------
 Xray 26.3.27: running
 Hysteria2: not installed
 命令: nv
@@ -78,11 +78,35 @@ Hysteria2: not installed
 
 ```bash
 nv add        # 添加配置，进入协议菜单
+nv info       # 查看 Xray profile 摘要
+nv url        # 输出 Xray profile 分享链接
+nv qr         # 输出 Xray profile 二维码
+nv del        # 删除一个 Xray profile
 nv status     # 查看当前配置和服务状态
 nv run        # 启动、停止、重启服务
+nv test       # 测试 Xray 配置
 nv update     # 更新 nv 命令
+nv update core # 更新 Xray core
+nv update hy2  # 更新 Hysteria2 core
+nv update geo  # 更新 geoip.dat / geosite.dat
 nv uninstall  # 卸载 nat-v2ray
 ```
+
+## 多配置管理
+
+Xray 协议会保存为独立 profile，并自动重建总配置，所以可以同时运行多个 Xray 节点。HY2 当前仍按单实例服务管理。
+
+常用命令：
+
+```bash
+nv info [name]  # 查看某个 profile 的协议、地址、内外端口和链接
+nv url [name]   # 只输出分享链接，方便复制到客户端
+nv qr [name]    # 输出二维码；没有 qrencode 时回退为链接
+nv del [name]   # 删除指定 profile，然后自动重建 Xray 配置
+nv test         # 使用 Xray 自带 test 模式验证当前总配置
+```
+
+不带 `[name]` 时，如果只有一个 profile 会自动选择；多个 profile 会显示列表让用户选择。
 
 ## 支持协议
 
