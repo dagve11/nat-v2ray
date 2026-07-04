@@ -93,45 +93,45 @@ TLS 相关配置不做真实连通测试，因为证书签发依赖用户的 DNS
 ## 菜单
 
 ```text
-1) Hysteria2 (HY2) - 推荐 NAT 机优先使用，UDP
-2) VLESS Reality - TCP，不需要 TLS 证书
-3) VLESS WS TLS - TCP，TLS 使用 TXT 检测
-4) Trojan TLS - TCP，TLS 使用 TXT 检测
-5) VMess TCP - TCP，不带 TLS
-6) VMess WS - TCP，不带 TLS
-7) Shadowsocks - TCP/UDP
-8) VMess WS TLS - TCP，TLS 使用 TXT 检测
-9) VMess gRPC TLS - TCP，TLS 使用 TXT 检测
-10) VLESS gRPC TLS - TCP，TLS 使用 TXT 检测
-11) Trojan WS TLS - TCP，TLS 使用 TXT 检测
-12) Trojan gRPC TLS - TCP，TLS 使用 TXT 检测
-13) VMess mKCP - UDP，不带 TLS
-14) VMess mKCP dynamic port - UDP 端口范围
-15) VLESS TCP - TCP，不带 TLS
-16) VLESS WS - TCP，不带 TLS
-17) VLESS mKCP - UDP，不带 TLS
-18) VLESS mKCP dynamic port - UDP 端口范围
-19) VMess TCP dynamic port - TCP 端口范围
-20) VMess WS dynamic port - TCP 端口范围
-21) VLESS TCP dynamic port - TCP 端口范围
-22) VLESS WS dynamic port - TCP 端口范围
-23) VLESS TCP TLS - TCP，TLS 使用 TXT 检测
-24) VMess TCP TLS - TCP，TLS 使用 TXT 检测
-25) VLESS HTTPUpgrade - TCP，不带 TLS
-26) VMess HTTPUpgrade - TCP，不带 TLS
-27) VLESS gRPC - TCP，不带 TLS
-28) VMess gRPC - TCP，不带 TLS
-29) VLESS XHTTP - TCP，不带 TLS
-30) VMess XHTTP - TCP，不带 TLS
-31) TLS TXT 检测工具
-32) Trojan TCP - TCP，不带 TLS
-33) Trojan WS - TCP，不带 TLS
-34) Trojan HTTPUpgrade - TCP，不带 TLS
-35) Trojan gRPC - TCP，不带 TLS
-36) Trojan XHTTP - TCP，不带 TLS
-37) VLESS XHTTP TLS - TCP，TLS 使用 TXT 检测
-38) VMess XHTTP TLS - TCP，TLS 使用 TXT 检测
-39) Trojan XHTTP TLS - TCP，TLS 使用 TXT 检测
+1) HY2-UDP
+2) VLESS-Reality-TCP
+3) VLESS-WS-TLS
+4) Trojan-TCP-TLS
+5) VMess-TCP
+6) VMess-WS
+7) Shadowsocks-TCP/UDP
+8) VMess-WS-TLS
+9) VMess-gRPC-TLS
+10) VLESS-gRPC-TLS
+11) Trojan-WS-TLS
+12) Trojan-gRPC-TLS
+13) VMess-mKCP-UDP
+14) VMess-mKCP-Dynamic-UDP
+15) VLESS-TCP
+16) VLESS-WS
+17) VLESS-mKCP-UDP
+18) VLESS-mKCP-Dynamic-UDP
+19) VMess-TCP-Dynamic
+20) VMess-WS-Dynamic
+21) VLESS-TCP-Dynamic
+22) VLESS-WS-Dynamic
+23) VLESS-TCP-TLS
+24) VMess-TCP-TLS
+25) VLESS-HTTPUpgrade
+26) VMess-HTTPUpgrade
+27) VLESS-gRPC
+28) VMess-gRPC
+29) VLESS-XHTTP
+30) VMess-XHTTP
+31) TLS-TXT-Check
+32) Trojan-TCP
+33) Trojan-WS
+34) Trojan-HTTPUpgrade
+35) Trojan-gRPC
+36) Trojan-XHTTP
+37) VLESS-XHTTP-TLS
+38) VMess-XHTTP-TLS
+39) Trojan-XHTTP-TLS
 0) 退出
 ```
 
