@@ -115,6 +115,36 @@ class InstallScriptTests(unittest.TestCase):
 
         self.assertIn('ensure_nv_command\n\n  case "${command}" in', main_body)
 
+    def test_nat_install_prompts_for_listen_and_public_ports(self) -> None:
+        script = read_install_script()
+        install_section = script[script.index("hy2_install()"):script.index("txt_check_tool()")]
+
+        self.assertIn("prompt_nat_port_pair()", script)
+        self.assertIn("prompt_nat_port_range_pair()", script)
+        self.assertIn("port_range_span()", script)
+        self.assertIn("内网端口范围和外网端口范围数量必须一致", script)
+        self.assertIn("本机监听端口", script)
+        self.assertIn("外网连接端口", script)
+        self.assertIn('read -r port public_port < <(prompt_nat_port_pair', install_section)
+        self.assertIn('read -r port_range public_port_range < <(prompt_nat_port_range_pair', install_section)
+        self.assertNotIn('port="$(prompt_port', install_section)
+        self.assertNotIn('port_range="$(prompt_port_range', install_section)
+
+    def test_share_links_use_public_nat_ports(self) -> None:
+        script = read_install_script()
+        install_section = script[script.index("hy2_install()"):script.index("txt_check_tool()")]
+
+        self.assertIn('normal_uri="$(build_hy2_uri "${server_host}" "${public_port}"', install_section)
+        self.assertIn('uri="$(build_reality_uri "${server_host}" "${public_port}"', install_section)
+        self.assertIn('uri="$(build_vless_uri "VLESS-TCP-${server_host}" "${server_host}" "${public_port}"', install_section)
+        self.assertIn('uri="$(build_vless_uri "VLESS-TCP-dynamic-${server_host}" "${server_host}" "${public_port_range}"', install_section)
+        self.assertIn('XRAY_LISTEN_PORT=${port}', install_section)
+        self.assertIn('XRAY_PUBLIC_PORT=${public_port}', install_section)
+        self.assertIn('HY2_LISTEN_PORT=${port}', install_section)
+        self.assertIn('HY2_PUBLIC_PORT=${public_port}', install_section)
+        self.assertNotRegex(install_section, r'uri=.*"\$\{port\}"')
+        self.assertNotRegex(install_section, r'uri=.*"\$\{port_range\}"')
+
     def test_reality_supports_xray_config_and_share_uri(self) -> None:
         script = read_install_script()
 
