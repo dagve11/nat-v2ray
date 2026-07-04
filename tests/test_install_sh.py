@@ -452,6 +452,14 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("卸载完成", uninstall_body)
         self.assertIn("反馈问题", uninstall_body)
 
+    def test_control_panel_exits_after_uninstall(self) -> None:
+        script = read_install_script()
+        panel_start = script.index("\ncontrol_panel()") + 1
+        panel_end = script.index("\nprotocol_menu()", panel_start)
+        panel_body = script[panel_start:panel_end]
+
+        self.assertIn("7) uninstall_nat_v2ray; exit 0 ;;", panel_body)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6144,7 +6144,7 @@ control_panel() {
       4) delete_config ;;
       5) runtime_management ;;
       6) update_nv_command ;;
-      7) uninstall_nat_v2ray ;;
+      7) uninstall_nat_v2ray; exit 0 ;;
       8) show_help ;;
       9) other_tools ;;
       10) show_about ;;
