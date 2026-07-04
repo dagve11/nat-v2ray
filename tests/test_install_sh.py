@@ -442,6 +442,21 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('if [ -z "${port}" ] || [ -z "${public_port}" ]; then', hy2_body)
         self.assertIn("prompt_nat_port_pair '请输入 HY2 UDP 端口，必须在 NAT 面板转发 UDP'", hy2_body)
 
+    def test_view_config_shows_node_summary_and_urls_like_233boy(self) -> None:
+        script = read_install_script()
+        view_start = script.index("view_config()")
+        view_end = script.index("\nchange_config()", view_start)
+        view_body = script[view_start:view_end]
+
+        self.assertIn("hy2_info()", script)
+        self.assertIn("HY2-UDP", script)
+        self.assertIn("------------- URL -------------", script)
+        self.assertIn("带 pinSHA256", script)
+        self.assertIn('profile_info "${profile}"', view_body)
+        self.assertIn("hy2_info", view_body)
+        self.assertNotIn('print_file_if_exists "Xray 环境"', view_body)
+        self.assertNotIn('print_file_if_exists "HY2 配置"', view_body)
+
     def test_nv_test_and_update_core_geo_are_available(self) -> None:
         script = read_install_script()
 

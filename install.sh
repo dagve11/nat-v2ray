@@ -705,7 +705,8 @@ profile_info() {
   echo "外网连接端口: $(xray_env_value XRAY_PUBLIC_PORT "${env_file}")$(xray_env_value XRAY_PUBLIC_PORT_RANGE "${env_file}")"
   echo "profile: ${env_file}"
   if [ -n "${uri}" ]; then
-    echo "链接: ${uri}"
+    echo "------------- URL -------------"
+    echo "${uri}"
   else
     yellow "链接未记录，请重新安装或使用 nv url 查看新配置"
   fi
@@ -733,6 +734,63 @@ profile_qr() {
   else
     yellow "未安装 qrencode，直接输出链接："
     printf '%s\n' "${uri}"
+  fi
+}
+
+hy2_info() {
+  local host
+  local listen_port
+  local public_port
+  local auth_password
+  local obfs_password
+  local masquerade_url
+  local normal_uri
+  local pinned_uri
+  local pin_sha256
+
+  require_linux
+  if [ ! -f "${HY2_ENV_FILE}" ]; then
+    yellow "未找到 HY2 配置"
+    return 0
+  fi
+
+  host="$(xray_env_value HY2_HOST "${HY2_ENV_FILE}")"
+  listen_port="$(xray_env_value HY2_LISTEN_PORT "${HY2_ENV_FILE}")"
+  public_port="$(xray_env_value HY2_PUBLIC_PORT "${HY2_ENV_FILE}")"
+  auth_password="$(xray_env_value HY2_AUTH "${HY2_ENV_FILE}")"
+  obfs_password="$(xray_env_value HY2_OBFS "${HY2_ENV_FILE}")"
+  masquerade_url="$(xray_env_value HY2_MASQUERADE "${HY2_ENV_FILE}")"
+  public_port="${public_port:-$(xray_env_value HY2_PORT "${HY2_ENV_FILE}")}"
+
+  echo
+  echo "------------- HY2-UDP -------------"
+  echo "协议: HY2-UDP"
+  echo "地址: ${host}"
+  echo "本机监听端口: ${listen_port}"
+  echo "外网连接端口: ${public_port}"
+  echo "认证密码: ${auth_password}"
+  echo "混淆: salamander"
+  echo "混淆密码: ${obfs_password}"
+  echo "伪装站点: ${masquerade_url}"
+  echo "服务状态: $(service_status_word hysteria-server)"
+
+  if [ -z "${host}" ] || [ -z "${public_port}" ] || [ -z "${auth_password}" ] || [ -z "${obfs_password}" ]; then
+    yellow "HY2 环境文件缺少必要字段，无法生成分享链接"
+    return 0
+  fi
+
+  normal_uri="$(build_hy2_uri "${host}" "${public_port}" "${auth_password}" "${obfs_password}" "${host}" '')"
+  echo "------------- URL -------------"
+  echo "${normal_uri}"
+
+  if [ -f "${HY2_CERT_FILE}" ]; then
+    pin_sha256="$(openssl x509 -in "${HY2_CERT_FILE}" -noout -fingerprint -sha256 2>/dev/null | sed 's/^.*=//' | tr -d ':')"
+    if [ -n "${pin_sha256}" ]; then
+      pinned_uri="$(build_hy2_uri "${host}" "${public_port}" "${auth_password}" "${obfs_password}" "${host}" "${pin_sha256}")"
+      echo
+      echo "带 pinSHA256:"
+      echo "${pinned_uri}"
+    fi
   fi
 }
 
@@ -5877,21 +5935,21 @@ print_file_if_exists() {
 }
 
 view_config() {
+  local profile
+
   require_linux
 
   show_service_status
   if [ "$(xray_profile_count)" -gt 0 ]; then
-    echo
-    blue "Xray profiles:"
-    xray_profile_names | sed 's/^/  /'
-    echo
-    yellow "每个 Xray 节点会保存为独立 profile；使用 nv info [name] 查看摘要，nv url [name] 输出分享链接。"
+    while IFS= read -r profile; do
+      [ -n "${profile}" ] || continue
+      profile_info "${profile}"
+    done < <(xray_profile_names)
   else
-    print_file_if_exists "Xray 环境" "${XRAY_ENV_FILE}"
-    print_file_if_exists "Xray 配置" "${XRAY_CONFIG_FILE}"
+    echo
+    yellow "未找到 Xray 配置"
   fi
-  print_file_if_exists "HY2 环境" "${HY2_ENV_FILE}"
-  print_file_if_exists "HY2 配置" "${HY2_CONFIG_FILE}"
+  hy2_info
 }
 
 change_config() {
