@@ -78,6 +78,19 @@ prompt_yes_no() {
   done
 }
 
+prompt_required_yes() {
+  local message="$1"
+  local value
+  while true; do
+    printf '%s ' "${message}" >&2
+    read -r value
+    case "${value}" in
+      y|Y|yes|YES) return 0 ;;
+      *) yellow "请输入 (y)" >&2 ;;
+    esac
+  done
+}
+
 validate_port() {
   local port="$1"
   if ! [[ "${port}" =~ ^[0-9]+$ ]]; then
@@ -6019,10 +6032,7 @@ uninstall_nat_v2ray() {
   require_linux
 
   red "将卸载 nat-v2ray，并删除脚本安装的服务、二进制、配置、证书、日志和命令。"
-  if ! prompt_yes_no '确认卸载 nat-v2ray' 'n'; then
-    yellow "已取消"
-    return 0
-  fi
+  prompt_required_yes '是否卸载 nat-v2ray? [y]:'
 
   systemctl disable --now xray >/dev/null 2>&1 || true
   systemctl disable --now hysteria-server >/dev/null 2>&1 || true
@@ -6046,7 +6056,9 @@ uninstall_nat_v2ray() {
   fi
 
   systemctl daemon-reload >/dev/null 2>&1 || true
-  green "nat-v2ray 已卸载"
+  green "卸载完成!"
+  echo "脚本哪里需要完善? 请反馈"
+  echo "反馈问题: ${REPO_URL}/issues"
 }
 
 show_help() {

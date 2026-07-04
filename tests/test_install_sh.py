@@ -432,6 +432,9 @@ class InstallScriptTests(unittest.TestCase):
         uninstall_end = script.index("\nshow_help()", uninstall_start)
         uninstall_body = script[uninstall_start:uninstall_end]
 
+        self.assertIn("prompt_required_yes()", script)
+        self.assertIn("是否卸载 nat-v2ray? [y]:", uninstall_body)
+        self.assertIn("请输入 (y)", script)
         self.assertIn('systemctl disable --now xray', uninstall_body)
         self.assertIn('systemctl disable --now hysteria-server', uninstall_body)
         self.assertIn('rm -rf "${XRAY_CONFIG_DIR}"', uninstall_body)
@@ -446,6 +449,8 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('sed -i', uninstall_body)
         self.assertIn('/root/.bashrc', uninstall_body)
         self.assertIn('systemctl daemon-reload', uninstall_body)
+        self.assertIn("卸载完成", uninstall_body)
+        self.assertIn("反馈问题", uninstall_body)
 
 
 if __name__ == "__main__":
