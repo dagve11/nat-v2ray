@@ -406,14 +406,49 @@ base64_no_wrap() {
   fi
 }
 
+base_dependency_present() {
+  local package="$1"
+
+  case "${package}" in
+    curl) command -v curl >/dev/null 2>&1 ;;
+    openssl) command -v openssl >/dev/null 2>&1 ;;
+    ca-certificates) [ -s /etc/ssl/certs/ca-certificates.crt ] ;;
+    iproute2) command -v ss >/dev/null 2>&1 ;;
+    dnsutils) command -v dig >/dev/null 2>&1 ;;
+    unzip) command -v unzip >/dev/null 2>&1 ;;
+    jq) command -v jq >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
 install_base_packages() {
+  local required_packages=(curl openssl ca-certificates iproute2 dnsutils unzip jq)
+  local missing_packages=()
+  local package
+
   if ! command -v apt-get >/dev/null 2>&1; then
     die "第一版只支持 Debian/Ubuntu 系统"
   fi
 
+  for package in "${required_packages[@]}"; do
+    if ! base_dependency_present "${package}"; then
+      missing_packages+=("${package}")
+    fi
+  done
+
+  if [ "${#missing_packages[@]}" -eq 0 ]; then
+    return 0
+  fi
+
   export DEBIAN_FRONTEND=noninteractive
+  yellow "安装缺失基础依赖：${missing_packages[*]}"
+  if apt-get install -y "${missing_packages[@]}"; then
+    return 0
+  fi
+
+  yellow "安装失败，更新 apt 索引后重试"
   apt-get update
-  apt-get install -y curl openssl ca-certificates iproute2 dnsutils unzip jq
+  apt-get install -y "${missing_packages[@]}"
 }
 
 hysteria_asset_name() {
@@ -6229,6 +6264,17 @@ nat-v2ray ${VERSION}
 EOF
 }
 
+running_from_nv_command() {
+  local source_path
+  local source_real
+  local nv_real
+
+  source_path="${BASH_SOURCE[0]}"
+  source_real="$(readlink -f "${source_path}" 2>/dev/null || printf '%s' "${source_path}")"
+  nv_real="$(readlink -f "${NV_BIN}" 2>/dev/null || printf '%s' "${NV_BIN}")"
+  [ "${source_real}" = "${nv_real}" ]
+}
+
 control_panel() {
   local choice
 
@@ -6350,7 +6396,13 @@ main() {
     help|-h|--help)
       show_help
       ;;
-    ""|panel|menu)
+    "")
+      if ! running_from_nv_command; then
+        install_base_packages
+      fi
+      control_panel
+      ;;
+    panel|menu)
       control_panel
       ;;
     *)

@@ -412,19 +412,39 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('[ -f "${source_path}" ] && [ -r "${source_path}" ]', install_body)
         self.assertIn('curl -fsSL -o "${NV_BIN}" "${SCRIPT_URL}"', install_body)
 
-    def test_no_arg_run_opens_control_panel_without_default_node_install(self) -> None:
+    def test_base_packages_are_detected_before_installing_missing_packages(self) -> None:
+        script = read_install_script()
+        install_start = script.index("base_dependency_present()")
+        install_end = script.index("\nhysteria_asset_name()", install_start)
+        install_body = script[install_start:install_end]
+
+        self.assertIn("local required_packages=(curl openssl ca-certificates iproute2 dnsutils unzip jq)", install_body)
+        self.assertIn('base_dependency_present "${package}"', install_body)
+        self.assertIn('missing_packages+=("${package}")', install_body)
+        self.assertIn('if [ "${#missing_packages[@]}" -eq 0 ]; then', install_body)
+        self.assertIn('apt-get install -y "${missing_packages[@]}"', install_body)
+        self.assertIn("apt-get update", install_body)
+        self.assertLess(
+            install_body.index('apt-get install -y "${missing_packages[@]}"'),
+            install_body.index("apt-get update"),
+        )
+        self.assertNotIn("apt-get install -y curl openssl ca-certificates iproute2 dnsutils unzip jq", install_body)
+
+    def test_no_arg_bash_checks_dependencies_and_opens_panel_without_default_node_install(self) -> None:
         script = read_install_script()
         main_start = script.index("\nmain()") + 1
         main_end = script.index('\nif [ "${NAT_V2RAY_LIB_ONLY:-0}"', main_start)
         main_body = script[main_start:main_end]
 
-        self.assertIn('""|panel|menu)', main_body)
+        self.assertIn('    "")', main_body)
+        self.assertIn("if ! running_from_nv_command; then", main_body)
+        self.assertIn("install_base_packages", main_body)
         self.assertIn("control_panel", main_body)
+        self.assertIn("panel|menu)", main_body)
         self.assertNotIn("first_install_wizard()", script)
         self.assertNotIn("prompt_first_install_hy2_ports()", script)
         self.assertNotIn("首次安装默认优先 HY2-UDP", script)
         self.assertNotIn("未填写 HY2 UDP 端口，改用 VLESS-Reality-TCP", script)
-        self.assertNotIn("running_from_nv_command()", script)
 
     def test_hy2_install_accepts_first_run_nat_ports(self) -> None:
         script = read_install_script()

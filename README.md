@@ -23,7 +23,7 @@ curl -fsSL -o install.sh https://raw.githubusercontent.com/dagve11/nat-v2ray/mai
 bash install.sh
 ```
 
-首次运行会安装/修复 `nv` 命令并打开总控台，不会自动安装节点。需要安装节点时选择 `1) 添加配置`，或之后直接输入：
+首次运行会安装/修复 `nv` 命令，检测基础依赖并打开总控台，不会自动安装节点。基础依赖只会缺什么装什么，安装失败时才更新 apt 索引后重试。需要安装节点时选择 `1) 添加配置`，或之后直接输入：
 
 ```bash
 nv
