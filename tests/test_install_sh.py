@@ -412,24 +412,19 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('[ -f "${source_path}" ] && [ -r "${source_path}" ]', install_body)
         self.assertIn('curl -fsSL -o "${NV_BIN}" "${SCRIPT_URL}"', install_body)
 
-    def test_first_run_prompts_hy2_udp_then_falls_back_to_reality(self) -> None:
+    def test_no_arg_run_opens_control_panel_without_default_node_install(self) -> None:
         script = read_install_script()
-        wizard_start = script.index("first_install_wizard()")
-        wizard_end = script.index("\ncontrol_panel()", wizard_start)
-        wizard_body = script[wizard_start:wizard_end]
         main_start = script.index("\nmain()") + 1
         main_end = script.index('\nif [ "${NAT_V2RAY_LIB_ONLY:-0}"', main_start)
         main_body = script[main_start:main_end]
 
-        self.assertIn("prompt_optional_port()", script)
-        self.assertIn("prompt_first_install_hy2_ports()", script)
-        self.assertIn("请输入 HY2 UDP 本机监听端口（留空使用 VLESS-Reality-TCP）", script)
-        self.assertIn("未填写 HY2 UDP 端口，改用 VLESS-Reality-TCP", wizard_body)
-        self.assertIn('hy2_install "${port}" "${public_port}"', wizard_body)
-        self.assertIn("reality_install", wizard_body)
-        self.assertIn("running_from_nv_command()", script)
-        self.assertIn("if running_from_nv_command; then", main_body)
-        self.assertIn("first_install_wizard", main_body)
+        self.assertIn('""|panel|menu)', main_body)
+        self.assertIn("control_panel", main_body)
+        self.assertNotIn("first_install_wizard()", script)
+        self.assertNotIn("prompt_first_install_hy2_ports()", script)
+        self.assertNotIn("首次安装默认优先 HY2-UDP", script)
+        self.assertNotIn("未填写 HY2 UDP 端口，改用 VLESS-Reality-TCP", script)
+        self.assertNotIn("running_from_nv_command()", script)
 
     def test_hy2_install_accepts_first_run_nat_ports(self) -> None:
         script = read_install_script()

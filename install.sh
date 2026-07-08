@@ -198,18 +198,6 @@ prompt_nat_port_pair() {
   printf '%s %s\n' "${listen_port}" "${public_port}"
 }
 
-prompt_first_install_hy2_ports() {
-  local listen_port
-  local public_port
-
-  listen_port="$(prompt_optional_port '请输入 HY2 UDP 本机监听端口（留空使用 VLESS-Reality-TCP）')"
-  if [ -z "${listen_port}" ]; then
-    return 1
-  fi
-  public_port="$(prompt_port '请输入 HY2 UDP 外网连接端口（生成分享链接使用，留空默认同本机监听端口）' "${listen_port}")"
-  printf '%s %s\n' "${listen_port}" "${public_port}"
-}
-
 prompt_nat_port_range_pair() {
   local message="$1"
   local default_range="$2"
@@ -6241,35 +6229,6 @@ nat-v2ray ${VERSION}
 EOF
 }
 
-running_from_nv_command() {
-  local source_path
-  local source_real
-  local nv_real
-
-  source_path="${BASH_SOURCE[0]}"
-  source_real="$(readlink -f "${source_path}" 2>/dev/null || printf '%s' "${source_path}")"
-  nv_real="$(readlink -f "${NV_BIN}" 2>/dev/null || printf '%s' "${NV_BIN}")"
-  [ "${source_real}" = "${nv_real}" ]
-}
-
-first_install_wizard() {
-  local port_pair
-  local port
-  local public_port
-
-  banner
-  yellow "首次安装默认优先 HY2-UDP。没有 UDP 转发时，直接回车改用 VLESS-Reality-TCP。"
-  port_pair="$(prompt_first_install_hy2_ports || true)"
-  if [ -z "${port_pair}" ]; then
-    yellow "未填写 HY2 UDP 端口，改用 VLESS-Reality-TCP。"
-    reality_install
-    return 0
-  fi
-
-  read -r port public_port <<< "${port_pair}"
-  hy2_install "${port}" "${public_port}"
-}
-
 control_panel() {
   local choice
 
@@ -6391,15 +6350,8 @@ main() {
     help|-h|--help)
       show_help
       ;;
-    panel|menu)
+    ""|panel|menu)
       control_panel
-      ;;
-    "")
-      if running_from_nv_command; then
-        control_panel
-      else
-        first_install_wizard
-      fi
       ;;
     *)
       yellow "未知命令：${command}"
