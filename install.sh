@@ -66,6 +66,7 @@ read_input() {
   if [ -t 0 ]; then
     configure_readline_keys
     IFS= read -r -e "${target}"
+    printf '\n' >&2
   else
     IFS= read -r "${target}"
   fi
@@ -79,7 +80,6 @@ prompt_menu_choice() {
 
   printf '%s [%s]: ' "${message}" "${range_label}" >&2
   read_input value
-  printf '\n' >&2
   printf '%s\n' "${value:-${default_value}}"
 }
 
