@@ -103,9 +103,27 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("8) 帮助", script)
         self.assertIn("9) 其他", script)
         self.assertIn("10) 关于", script)
-        self.assertIn("请选择 [1-10]:", script)
+        self.assertIn("choice=\"$(prompt_menu_choice '请选择' '1-10' '1')\"", script)
         self.assertIn("add|install|protocol)", script)
         self.assertIn("install -m 0755", script)
+
+    def test_menu_choice_prompts_force_newline_after_input(self) -> None:
+        script = read_install_script()
+        control_start = script.index("control_panel()")
+        control_end = script.index("protocol_menu()", control_start)
+        control_body = script[control_start:control_end]
+        protocol_start = script.index("protocol_menu()")
+        protocol_end = script.index("\nmain()", protocol_start)
+        protocol_body = script[protocol_start:protocol_end]
+        prompt_start = script.index("prompt_menu_choice()")
+        prompt_end = script.index("\nprompt_value()", prompt_start)
+        prompt_body = script[prompt_start:prompt_end]
+
+        self.assertIn("prompt_menu_choice()", script)
+        self.assertIn("read_input value\n  printf '\\n' >&2", prompt_body)
+        self.assertIn("printf '%s\\n' \"${value:-${default_value}}\"", prompt_body)
+        self.assertIn("choice=\"$(prompt_menu_choice '请选择' '1-10' '1')\"", control_body)
+        self.assertIn("choice=\"$(prompt_menu_choice '请输入选项' '1' '1')\"", protocol_body)
 
     def test_nv_command_is_ensured_before_subcommand_dispatch(self) -> None:
         script = read_install_script()

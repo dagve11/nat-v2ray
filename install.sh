@@ -71,6 +71,18 @@ read_input() {
   fi
 }
 
+prompt_menu_choice() {
+  local message="$1"
+  local range_label="$2"
+  local default_value="$3"
+  local value
+
+  printf '%s [%s]: ' "${message}" "${range_label}" >&2
+  read_input value
+  printf '\n' >&2
+  printf '%s\n' "${value:-${default_value}}"
+}
+
 prompt_value() {
   local message="$1"
   local default_value="$2"
@@ -6301,9 +6313,7 @@ control_panel() {
   ensure_nv_command
   while true; do
     show_control_panel
-    printf '请选择 [1-10]: ' >&2
-    read_input choice
-    choice="${choice:-1}"
+    choice="$(prompt_menu_choice '请选择' '1-10' '1')"
     case "${choice}" in
       1) protocol_menu ;;
       2) change_config ;;
@@ -6326,9 +6336,7 @@ protocol_menu() {
   banner
   while true; do
     show_menu
-    printf '请输入选项 [1]: ' >&2
-    read_input choice
-    choice="${choice:-1}"
+    choice="$(prompt_menu_choice '请输入选项' '1' '1')"
     case "${choice}" in
       1) hy2_install ;;
       2) reality_install ;;
