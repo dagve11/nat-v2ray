@@ -23,7 +23,7 @@ curl -fsSL -o install.sh https://raw.githubusercontent.com/dagve11/nat-v2ray/mai
 bash install.sh
 ```
 
-首次运行会安装/修复 `nv` 命令，检测基础依赖并打开总控台，不会自动安装节点。基础依赖只会缺什么装什么，安装失败时才更新 apt 索引后重试。需要安装节点时选择 `1) 添加配置`，或之后直接输入：
+首次运行会安装/修复 `nv` 命令，检测基础依赖并打开总控台，不会自动安装节点。基础依赖只会缺什么装什么，安装失败时才更新 apt 索引后重试。需要单独检查或逐条安装依赖时选择 `10) 依赖`，或直接输入 `nv deps`。需要安装节点时选择 `1) 添加配置`，或之后直接输入：
 
 ```bash
 nv
@@ -77,7 +77,7 @@ Hysteria2: not installed
  7) 卸载
  8) 帮助
  9) 其他
-10) 关于
+10) 依赖
  0) 退出
 ```
 
@@ -96,6 +96,7 @@ nv update     # 更新 nv 命令
 nv update core # 更新 Xray core
 nv update hy2  # 更新 Hysteria2 core
 nv update geo  # 更新 geoip.dat / geosite.dat
+nv deps       # 检查并逐条安装脚本依赖，包括 acme.sh
 nv uninstall  # 卸载 nat-v2ray
 ```
 

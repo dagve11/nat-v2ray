@@ -418,6 +418,10 @@ base64_no_wrap() {
   fi
 }
 
+required_base_packages() {
+  printf '%s\n' curl openssl ca-certificates iproute2 dnsutils unzip jq
+}
+
 base_dependency_present() {
   local package="$1"
 
@@ -433,8 +437,30 @@ base_dependency_present() {
   esac
 }
 
+install_base_package() {
+  local package="$1"
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    die "第一版只支持 Debian/Ubuntu 系统"
+  fi
+  if base_dependency_present "${package}"; then
+    green "依赖已安装：${package}"
+    return 0
+  fi
+
+  export DEBIAN_FRONTEND=noninteractive
+  yellow "安装依赖：${package}"
+  if apt-get install -y "${package}"; then
+    return 0
+  fi
+
+  yellow "安装失败，更新 apt 索引后重试"
+  apt-get update
+  apt-get install -y "${package}"
+}
+
 install_base_packages() {
-  local required_packages=(curl openssl ca-certificates iproute2 dnsutils unzip jq)
+  local required_packages=()
   local missing_packages=()
   local package
 
@@ -442,6 +468,7 @@ install_base_packages() {
     die "第一版只支持 Debian/Ubuntu 系统"
   fi
 
+  mapfile -t required_packages < <(required_base_packages)
   for package in "${required_packages[@]}"; do
     if ! base_dependency_present "${package}"; then
       missing_packages+=("${package}")
@@ -5993,7 +6020,7 @@ $(show_service_status)
  7) 卸载
  8) 帮助
  9) 其他
-10) 关于
+10) 依赖
  0) 退出
 EOF
 }
@@ -6247,6 +6274,7 @@ show_help() {
   nv update core  更新 Xray core
   nv update hy2   更新 Hysteria2 core
   nv update geo   更新 geoip.dat / geosite.dat
+  nv deps         检查并安装脚本依赖
   nv uninstall    卸载 nat-v2ray
 
 说明：
@@ -6281,6 +6309,102 @@ EOF
       4) xray_test_run ;;
       0) return 0 ;;
       *) yellow "无效选项" ;;
+    esac
+  done
+}
+
+dependency_present() {
+  local name="$1"
+
+  case "${name}" in
+    acme.sh) [ -x "${ACME_SH}" ] ;;
+    *) base_dependency_present "${name}" ;;
+  esac
+}
+
+dependency_status_label() {
+  local name="$1"
+
+  if dependency_present "${name}"; then
+    printf '\033[32m%s\033[0m\n' "已安装"
+  else
+    printf '\033[33m%s\033[0m\n' "未安装"
+  fi
+}
+
+show_dependency_menu() {
+  local dependencies=()
+  local index
+  local name
+
+  mapfile -t dependencies < <(required_base_packages)
+  dependencies+=("acme.sh")
+
+  cat <<EOF
+
+依赖检查：
+EOF
+  for index in "${!dependencies[@]}"; do
+    name="${dependencies[${index}]}"
+    printf ' %2d) %-16s %s\n' "$((index + 1))" "${name}" "$(dependency_status_label "${name}")"
+  done
+  cat <<EOF
+  a) 安装全部缺失依赖
+  0) 返回
+EOF
+}
+
+install_dependency_by_name() {
+  local name="$1"
+
+  case "${name}" in
+    acme.sh) install_acme_sh ;;
+    curl|openssl|ca-certificates|iproute2|dnsutils|unzip|jq) install_base_package "${name}" ;;
+    *) die "未知依赖：${name}" ;;
+  esac
+}
+
+install_missing_dependencies() {
+  local package
+
+  while IFS= read -r package; do
+    if ! dependency_present "${package}"; then
+      install_dependency_by_name "${package}"
+    fi
+  done < <(required_base_packages)
+
+  if ! dependency_present "acme.sh"; then
+    install_dependency_by_name "acme.sh"
+  fi
+  green "依赖检查完成"
+}
+
+dependency_menu() {
+  local choice
+  local dependencies=()
+  local selected
+
+  require_linux
+  mapfile -t dependencies < <(required_base_packages)
+  dependencies+=("acme.sh")
+
+  while true; do
+    show_dependency_menu
+    printf '请选择要安装的依赖编号 [0-%s/a]: ' "${#dependencies[@]}" >&2
+    read_input choice
+    choice="${choice:-0}"
+    case "${choice}" in
+      0) return 0 ;;
+      a|A) require_root; install_missing_dependencies ;;
+      *)
+        if [[ "${choice}" =~ ^[0-9]+$ ]] && [ "${choice}" -ge 1 ] && [ "${choice}" -le "${#dependencies[@]}" ]; then
+          require_root
+          selected="${dependencies[$((choice - 1))]}"
+          install_dependency_by_name "${selected}"
+        else
+          yellow "无效选项"
+        fi
+        ;;
     esac
   done
 }
@@ -6324,7 +6448,7 @@ control_panel() {
       7) uninstall_nat_v2ray; exit 0 ;;
       8) show_help ;;
       9) other_tools ;;
-      10) show_about ;;
+      10) dependency_menu ;;
       0) exit 0 ;;
       *) yellow "无效选项" ;;
     esac
@@ -6416,6 +6540,9 @@ main() {
       ;;
     update)
       update_nat_v2ray "${target:-script}"
+      ;;
+    deps|dependency|dependencies)
+      dependency_menu
       ;;
     uninstall)
       uninstall_nat_v2ray

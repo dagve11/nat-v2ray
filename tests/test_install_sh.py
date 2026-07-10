@@ -102,7 +102,8 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("7) 卸载", script)
         self.assertIn("8) 帮助", script)
         self.assertIn("9) 其他", script)
-        self.assertIn("10) 关于", script)
+        self.assertIn("10) 依赖", script)
+        self.assertNotIn("10) 关于", script)
         self.assertIn("choice=\"$(prompt_menu_choice '请选择' '1-10' '1')\"", script)
         self.assertIn("add|install|protocol)", script)
         self.assertIn("install -m 0755", script)
@@ -449,18 +450,58 @@ class InstallScriptTests(unittest.TestCase):
         install_start = script.index("base_dependency_present()")
         install_end = script.index("\nhysteria_asset_name()", install_start)
         install_body = script[install_start:install_end]
+        batch_start = script.index("\ninstall_base_packages()", install_start) + 1
+        batch_end = script.index("\nhysteria_asset_name()", batch_start)
+        batch_body = script[batch_start:batch_end]
 
-        self.assertIn("local required_packages=(curl openssl ca-certificates iproute2 dnsutils unzip jq)", install_body)
+        self.assertIn("required_base_packages()", script)
+        self.assertIn("printf '%s\\n' curl openssl ca-certificates iproute2 dnsutils unzip jq", script)
+        self.assertIn("local required_packages=()", install_body)
+        self.assertIn("mapfile -t required_packages < <(required_base_packages)", install_body)
         self.assertIn('base_dependency_present "${package}"', install_body)
         self.assertIn('missing_packages+=("${package}")', install_body)
         self.assertIn('if [ "${#missing_packages[@]}" -eq 0 ]; then', install_body)
         self.assertIn('apt-get install -y "${missing_packages[@]}"', install_body)
         self.assertIn("apt-get update", install_body)
         self.assertLess(
-            install_body.index('apt-get install -y "${missing_packages[@]}"'),
-            install_body.index("apt-get update"),
+            batch_body.index('apt-get install -y "${missing_packages[@]}"'),
+            batch_body.index("apt-get update"),
         )
         self.assertNotIn("apt-get install -y curl openssl ca-certificates iproute2 dnsutils unzip jq", install_body)
+
+    def test_dependency_panel_checks_and_installs_each_dependency(self) -> None:
+        script = read_install_script()
+        panel_start = script.index("\nshow_control_panel()") + 1
+        panel_end = script.index("\nprint_file_if_exists()", panel_start)
+        panel_body = script[panel_start:panel_end]
+        self.assertIn("\nshow_dependency_menu()", script)
+        self.assertIn("\ndependency_menu()", script)
+        show_dependency_start = script.index("\nshow_dependency_menu()") + 1
+        show_dependency_end = script.index("\ninstall_dependency_by_name()", show_dependency_start)
+        show_dependency_body = script[show_dependency_start:show_dependency_end]
+        dependency_start = script.index("\ndependency_menu()") + 1
+        dependency_end = script.index("\nshow_about()", dependency_start)
+        dependency_body = script[dependency_start:dependency_end]
+        main_start = script.index("\nmain()") + 1
+        main_end = script.index('\nif [ "${NAT_V2RAY_LIB_ONLY:-0}"', main_start)
+        main_body = script[main_start:main_end]
+
+        self.assertIn("10) 依赖", panel_body)
+        self.assertIn("10) dependency_menu ;;", script)
+        self.assertIn("deps|dependency|dependencies)", main_body)
+        self.assertIn("required_base_packages()", script)
+        self.assertIn("install_base_package()", script)
+        self.assertIn('apt-get install -y "${package}"', script)
+        self.assertIn("dependency_present()", script)
+        self.assertIn("install_dependency_by_name()", script)
+        self.assertIn("install_missing_dependencies()", script)
+        self.assertIn("show_dependency_menu()", script)
+        self.assertIn("依赖检查", show_dependency_body)
+        self.assertIn("请选择要安装的依赖编号", dependency_body)
+        self.assertIn("a) 安装全部缺失依赖", show_dependency_body)
+        self.assertIn("acme.sh", show_dependency_body)
+        for package in ("curl", "openssl", "ca-certificates", "iproute2", "dnsutils", "unzip", "jq"):
+            self.assertIn(package, script)
 
     def test_no_arg_bash_checks_dependencies_and_opens_panel_without_default_node_install(self) -> None:
         script = read_install_script()
