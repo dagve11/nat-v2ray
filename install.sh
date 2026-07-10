@@ -508,6 +508,12 @@ hysteria_asset_name() {
 install_hysteria_binary() {
   local asset
   local url
+
+  if [ -x "${HYSTERIA_BIN}" ]; then
+    green "Hysteria2 core 已安装，跳过下载"
+    return 0
+  fi
+
   asset="$(hysteria_asset_name)"
   url="https://download.hysteria.network/app/latest/${asset}"
 
@@ -531,6 +537,13 @@ install_xray_binary() {
   local asset
   local url
   local work_dir
+
+  if [ -x "${XRAY_BIN}" ]; then
+    green "Xray core 已安装，跳过下载"
+    migrate_legacy_xray_profile
+    return 0
+  fi
+
   asset="$(xray_asset_name)"
   url="https://github.com/XTLS/Xray-core/releases/latest/download/${asset}"
   work_dir="/tmp/nat-v2ray-xray"
@@ -1372,12 +1385,10 @@ wait_for_txt_record() {
 }
 
 install_acme_sh() {
-  if [ -x "${ACME_SH}" ]; then
-    return 0
+  if [ ! -x "${ACME_SH}" ]; then
+    blue "安装 acme.sh"
+    curl -fsSL https://get.acme.sh | sh -s email="$(prompt_value '请输入证书通知邮箱' 'admin@example.com')" --force
   fi
-
-  blue "安装 acme.sh"
-  curl -fsSL https://get.acme.sh | sh -s email="$(prompt_value '请输入证书通知邮箱' 'admin@example.com')" --force
   if [ ! -x "${ACME_SH}" ]; then
     die "acme.sh 安装失败"
   fi
@@ -1424,12 +1435,15 @@ request_tls_cert_manual_dns() {
   fi
 
   set +e
-  issue_output="$("${ACME_SH}" --issue --dns -d "${domain}" --yes-I-know-dns-manual-mode-enough-go-ahead-please 2>&1)"
+  issue_output="$("${ACME_SH}" --server letsencrypt --issue --dns -d "${domain}" --yes-I-know-dns-manual-mode-enough-go-ahead-please 2>&1)"
   rc=$?
   set -e
   printf '%s\n' "${issue_output}"
 
   txt_value="$(printf '%s\n' "${issue_output}" | extract_acme_txt_value)"
+  if [ -z "${txt_value}" ] && [ "${rc}" -ne 0 ]; then
+    die "acme.sh 未生成 TXT 值，证书申请尚未进入 DNS 验证阶段。请检查 CA 账号注册、网络和内存后重试。"
+  fi
   if [ -z "${txt_value}" ]; then
     yellow "未能自动解析 acme.sh 输出里的 TXT 值。"
     txt_value="$(prompt_value '请手动粘贴 acme.sh 要求的 TXT 值' '')"
@@ -1441,7 +1455,7 @@ request_tls_cert_manual_dns() {
   wait_for_txt_record "${domain}" "${txt_value}" || die "TXT 验证未通过"
 
   set +e
-  renew_output="$("${ACME_SH}" --renew -d "${domain}" --yes-I-know-dns-manual-mode-enough-go-ahead-please --force 2>&1)"
+  renew_output="$("${ACME_SH}" --server letsencrypt --renew -d "${domain}" --yes-I-know-dns-manual-mode-enough-go-ahead-please --force 2>&1)"
   rc=$?
   set -e
   printf '%s\n' "${renew_output}"

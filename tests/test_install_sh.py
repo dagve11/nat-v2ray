@@ -213,6 +213,47 @@ class InstallScriptTests(unittest.TestCase):
 
         self.assertIn("curl -fsSL https://get.acme.sh | sh -s email=", install_body)
         self.assertIn("--force", install_body)
+        self.assertLess(
+            install_body.index('if [ ! -x "${ACME_SH}" ]; then'),
+            install_body.index('"${ACME_SH}" --set-default-ca --server letsencrypt'),
+        )
+
+    def test_tls_certificate_flow_forces_letsencrypt_and_stops_without_txt(self) -> None:
+        script = read_install_script()
+        cert_start = script.index("request_tls_cert_manual_dns()")
+        cert_end = script.index("\nrender_vless_tcp_tls_config()", cert_start)
+        cert_body = script[cert_start:cert_end]
+
+        self.assertIn("--server letsencrypt --issue --dns", cert_body)
+        self.assertIn("--server letsencrypt --renew", cert_body)
+        self.assertIn('if [ -z "${txt_value}" ] && [ "${rc}" -ne 0 ]; then', cert_body)
+        self.assertIn("acme.sh 未生成 TXT 值，证书申请尚未进入 DNS 验证阶段", cert_body)
+        self.assertLess(
+            cert_body.index('if [ -z "${txt_value}" ] && [ "${rc}" -ne 0 ]; then'),
+            cert_body.index("请手动粘贴 acme.sh 要求的 TXT 值"),
+        )
+
+    def test_core_installers_skip_download_when_binary_exists(self) -> None:
+        script = read_install_script()
+        hy_start = script.index("install_hysteria_binary()")
+        hy_end = script.index("\nxray_asset_name()", hy_start)
+        hy_body = script[hy_start:hy_end]
+        xray_start = script.index("install_xray_binary()")
+        xray_end = script.index("\nwrite_xray_service()", xray_start)
+        xray_body = script[xray_start:xray_end]
+
+        self.assertIn('if [ -x "${HYSTERIA_BIN}" ]; then', hy_body)
+        self.assertIn("Hysteria2 core 已安装，跳过下载", hy_body)
+        self.assertLess(
+            hy_body.index('if [ -x "${HYSTERIA_BIN}" ]; then'),
+            hy_body.index("curl -fL --retry 3"),
+        )
+        self.assertIn('if [ -x "${XRAY_BIN}" ]; then', xray_body)
+        self.assertIn("Xray core 已安装，跳过下载", xray_body)
+        self.assertLess(
+            xray_body.index('if [ -x "${XRAY_BIN}" ]; then'),
+            xray_body.index("curl -fL --retry 3"),
+        )
 
     def test_vless_plain_protocols_render_xray_configs_and_links(self) -> None:
         script = read_install_script()
