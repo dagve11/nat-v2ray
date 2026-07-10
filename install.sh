@@ -422,6 +422,10 @@ required_base_packages() {
   printf '%s\n' curl openssl ca-certificates iproute2 dnsutils unzip jq
 }
 
+required_core_components() {
+  printf '%s\n' xray-core hysteria2-core
+}
+
 base_dependency_present() {
   local package="$1"
 
@@ -6303,7 +6307,7 @@ show_help() {
   nv update core  更新 Xray core
   nv update hy2   更新 Hysteria2 core
   nv update geo   更新 geoip.dat / geosite.dat
-  nv deps         检查并安装脚本依赖
+  nv deps         检查并安装脚本依赖和核心组件
   nv uninstall    卸载 nat-v2ray
 
 说明：
@@ -6347,27 +6351,59 @@ dependency_present() {
 
   case "${name}" in
     acme.sh) [ -x "${ACME_SH}" ] ;;
+    xray-core) [ -x "${XRAY_BIN}" ] ;;
+    hysteria2-core) [ -x "${HYSTERIA_BIN}" ] ;;
     *) base_dependency_present "${name}" ;;
+  esac
+}
+
+dependency_display_name() {
+  local name="$1"
+
+  case "${name}" in
+    xray-core) printf 'Xray-core\n' ;;
+    hysteria2-core) printf 'Hysteria2-core\n' ;;
+    *) printf '%s\n' "${name}" ;;
   esac
 }
 
 dependency_status_label() {
   local name="$1"
 
-  if dependency_present "${name}"; then
-    printf '\033[32m%s\033[0m\n' "已安装"
-  else
-    printf '\033[33m%s\033[0m\n' "未安装"
-  fi
+  case "${name}" in
+    xray-core)
+      if dependency_present "${name}"; then
+        printf '\033[32m%s\033[0m\n' "已安装 $(xray_version_label)"
+      else
+        printf '\033[33m%s\033[0m\n' "未安装"
+      fi
+      ;;
+    hysteria2-core)
+      if dependency_present "${name}"; then
+        printf '\033[32m%s\033[0m\n' "已安装 $(hysteria_version_label)"
+      else
+        printf '\033[33m%s\033[0m\n' "未安装"
+      fi
+      ;;
+    *)
+      if dependency_present "${name}"; then
+        printf '\033[32m%s\033[0m\n' "已安装"
+      else
+        printf '\033[33m%s\033[0m\n' "未安装"
+      fi
+      ;;
+  esac
 }
 
 show_dependency_menu() {
   local dependencies=()
+  local core_components=()
   local index
   local name
 
   mapfile -t dependencies < <(required_base_packages)
   dependencies+=("acme.sh")
+  mapfile -t core_components < <(required_core_components)
 
   cat <<EOF
 
@@ -6375,7 +6411,16 @@ show_dependency_menu() {
 EOF
   for index in "${!dependencies[@]}"; do
     name="${dependencies[${index}]}"
-    printf ' %2d) %-16s %s\n' "$((index + 1))" "${name}" "$(dependency_status_label "${name}")"
+    printf ' %2d) %-16s %s\n' "$((index + 1))" "$(dependency_display_name "${name}")" "$(dependency_status_label "${name}")"
+  done
+
+  cat <<EOF
+
+核心组件：
+EOF
+  for index in "${!core_components[@]}"; do
+    name="${core_components[${index}]}"
+    printf ' %2d) %-16s %s\n' "$((index + ${#dependencies[@]} + 1))" "$(dependency_display_name "${name}")" "$(dependency_status_label "${name}")"
   done
   cat <<EOF
   a) 安装全部缺失依赖
@@ -6383,11 +6428,22 @@ EOF
 EOF
 }
 
+install_core_component_by_name() {
+  local name="$1"
+
+  case "${name}" in
+    xray-core) install_base_packages; install_xray_binary ;;
+    hysteria2-core) install_base_packages; install_hysteria_binary ;;
+    *) die "未知核心组件：${name}" ;;
+  esac
+}
+
 install_dependency_by_name() {
   local name="$1"
 
   case "${name}" in
     acme.sh) install_acme_sh ;;
+    xray-core|hysteria2-core) install_core_component_by_name "${name}" ;;
     curl|openssl|ca-certificates|iproute2|dnsutils|unzip|jq) install_base_package "${name}" ;;
     *) die "未知依赖：${name}" ;;
   esac
@@ -6411,11 +6467,14 @@ install_missing_dependencies() {
 dependency_menu() {
   local choice
   local dependencies=()
+  local core_components=()
   local selected
 
   require_linux
   mapfile -t dependencies < <(required_base_packages)
   dependencies+=("acme.sh")
+  mapfile -t core_components < <(required_core_components)
+  dependencies+=("${core_components[@]}")
 
   while true; do
     show_dependency_menu
