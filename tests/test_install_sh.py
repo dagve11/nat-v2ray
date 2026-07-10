@@ -568,6 +568,19 @@ class InstallScriptTests(unittest.TestCase):
 
         self.assertIn("7) uninstall_nat_v2ray; exit 0 ;;", panel_body)
 
+    def test_control_panel_does_not_print_top_banner(self) -> None:
+        script = read_install_script()
+        panel_start = script.index("\ncontrol_panel()") + 1
+        panel_end = script.index("\nprotocol_menu()", panel_start)
+        panel_body = script[panel_start:panel_end]
+        protocol_start = script.index("\nprotocol_menu()") + 1
+        protocol_end = script.index("\nmain()", protocol_start)
+        protocol_body = script[protocol_start:protocol_end]
+
+        self.assertNotIn("\n  banner\n", panel_body)
+        self.assertIn("show_control_panel", panel_body)
+        self.assertIn("\n  banner\n", protocol_body)
+
 
 if __name__ == "__main__":
     unittest.main()

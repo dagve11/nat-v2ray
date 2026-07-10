@@ -6281,7 +6281,6 @@ control_panel() {
   local choice
 
   ensure_nv_command
-  banner
   while true; do
     show_control_panel
     printf '请选择 [1-10]: ' >&2
