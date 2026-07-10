@@ -5967,7 +5967,7 @@ show_service_status() {
 show_control_panel() {
   cat <<EOF
 
-------------- nat-v2ray ${VERSION} -------------
+------------- nat-v2ray ${VERSION} by AG666 -------------
 $(show_service_status)
 命令: nv
 仓库: ${REPO_URL}

@@ -91,7 +91,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("show_control_panel()", script)
         self.assertIn("control_panel()", script)
         self.assertIn("protocol_menu()", script)
-        self.assertIn("------------- nat-v2ray ${VERSION} -------------", script)
+        self.assertIn("------------- nat-v2ray ${VERSION} by AG666 -------------", script)
         self.assertIn("命令: nv", script)
         self.assertIn("1) 添加配置", script)
         self.assertIn("2) 更改配置", script)
