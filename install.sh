@@ -824,19 +824,21 @@ hy2_info() {
     return 0
   fi
 
-  normal_uri="$(build_hy2_uri "${host}" "${public_port}" "${auth_password}" "${obfs_password}" "${host}" '')"
   echo "------------- URL -------------"
-  echo "${normal_uri}"
 
   if [ -f "${HY2_CERT_FILE}" ]; then
     pin_sha256="$(openssl x509 -in "${HY2_CERT_FILE}" -noout -fingerprint -sha256 2>/dev/null | sed 's/^.*=//' | tr -d ':')"
     if [ -n "${pin_sha256}" ]; then
       pinned_uri="$(build_hy2_uri "${host}" "${public_port}" "${auth_password}" "${obfs_password}" "${host}" "${pin_sha256}")"
-      echo
-      echo "带 pinSHA256:"
+      echo "推荐链接（v2rayN 7.23+，带 pinSHA256）:"
       echo "${pinned_uri}"
+      echo
     fi
   fi
+
+  normal_uri="$(build_hy2_uri "${host}" "${public_port}" "${auth_password}" "${obfs_password}" "${host}" '')"
+  echo "兼容链接（旧客户端，insecure=1）:"
+  echo "${normal_uri}"
 }
 
 delete_xray_profile() {
@@ -1195,11 +1197,11 @@ EOF
   echo "监听检查："
   ss -lunp | grep "${port}" || true
   echo
-  echo "分享链接："
-  echo "${normal_uri}"
-  echo
-  echo "带 pinSHA256 的链接："
+  echo "推荐链接（v2rayN 7.23+，带 pinSHA256）："
   echo "${pinned_uri}"
+  echo
+  echo "兼容链接（旧客户端，insecure=1）："
+  echo "${normal_uri}"
   echo
   yellow "如果客户端连不上，优先检查 NAT 面板是否把外网 UDP ${public_port} 转发到本机 UDP ${port}，不是 TCP。"
 }

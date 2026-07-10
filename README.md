@@ -50,6 +50,13 @@ bash install.sh
 
 公网长期使用优先选择 `HY2`、`Reality` 或 TLS 类协议。非 TLS 的 TCP/WS/gRPC/HTTPUpgrade/XHTTP 更适合临时测试或兼容旧客户端。
 
+HY2 使用自签证书时，脚本会同时生成两条链接：
+
+- 推荐链接：带 `pinSHA256`，适合 v2rayN 7.23+ 和新版核心。
+- 兼容链接：带 `insecure=1`，仅建议旧客户端无法导入 pin 链接时使用。
+
+新版客户端不应长期依赖单纯跳过证书验证；优先复制 `pinSHA256` 链接。
+
 ## nv 总控台
 
 `nv` 会打开 233boy 风格的总控台：

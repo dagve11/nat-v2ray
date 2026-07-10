@@ -472,6 +472,28 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotIn('print_file_if_exists "Xray 环境"', view_body)
         self.assertNotIn('print_file_if_exists "HY2 配置"', view_body)
 
+    def test_hy2_outputs_pinned_link_before_insecure_compat_link(self) -> None:
+        script = read_install_script()
+        hy2_info_start = script.index("hy2_info()")
+        hy2_info_end = script.index("\ndelete_xray_profile()", hy2_info_start)
+        hy2_info_body = script[hy2_info_start:hy2_info_end]
+        hy2_install_start = script.index("hy2_install()")
+        hy2_install_end = script.index("\nreality_install()", hy2_install_start)
+        hy2_install_body = script[hy2_install_start:hy2_install_end]
+
+        self.assertIn("推荐链接（v2rayN 7.23+，带 pinSHA256）", hy2_info_body)
+        self.assertIn("兼容链接（旧客户端，insecure=1）", hy2_info_body)
+        self.assertLess(
+            hy2_info_body.index("推荐链接（v2rayN 7.23+，带 pinSHA256）"),
+            hy2_info_body.index("兼容链接（旧客户端，insecure=1）"),
+        )
+        self.assertIn("推荐链接（v2rayN 7.23+，带 pinSHA256）", hy2_install_body)
+        self.assertIn("兼容链接（旧客户端，insecure=1）", hy2_install_body)
+        self.assertLess(
+            hy2_install_body.index("推荐链接（v2rayN 7.23+，带 pinSHA256）"),
+            hy2_install_body.index("兼容链接（旧客户端，insecure=1）"),
+        )
+
     def test_interactive_reads_use_readline_backspace_compatibility(self) -> None:
         script = read_install_script()
 
