@@ -656,6 +656,25 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotIn("Xray: not installed", status_body)
         self.assertNotIn("Hysteria2: not installed", status_body)
 
+    def test_runtime_management_checks_service_files_before_systemctl(self) -> None:
+        script = read_install_script()
+        runtime_start = script.index("\nruntime_management()") + 1
+        runtime_end = script.index("\nupdate_nv_command()", runtime_start)
+        runtime_body = script[runtime_start:runtime_end]
+
+        self.assertIn("manage_service()", script)
+        self.assertIn('service_file_for_name()', script)
+        self.assertIn('if [ ! -f "${service_file}" ]; then', script)
+        self.assertIn("服务不存在，请先添加对应配置", script)
+        self.assertIn('manage_service xray start', runtime_body)
+        self.assertIn('manage_service xray stop', runtime_body)
+        self.assertIn('manage_service xray restart', runtime_body)
+        self.assertIn('manage_service hysteria-server start', runtime_body)
+        self.assertIn('manage_service hysteria-server stop', runtime_body)
+        self.assertIn('manage_service hysteria-server restart', runtime_body)
+        self.assertNotIn('systemctl enable --now xray', runtime_body)
+        self.assertNotIn('systemctl enable --now hysteria-server', runtime_body)
+
     def test_control_panel_does_not_print_top_banner(self) -> None:
         script = read_install_script()
         panel_start = script.index("\ncontrol_panel()") + 1

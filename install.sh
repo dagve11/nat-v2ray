@@ -5955,6 +5955,35 @@ service_status_word() {
   esac
 }
 
+service_file_for_name() {
+  local service_name="$1"
+
+  case "${service_name}" in
+    xray) printf '%s\n' "${XRAY_SERVICE_FILE}" ;;
+    hysteria-server) printf '%s\n' "${HY2_SERVICE_FILE}" ;;
+    *) return 1 ;;
+  esac
+}
+
+manage_service() {
+  local service_name="$1"
+  local action="$2"
+  local service_file
+
+  service_file="$(service_file_for_name "${service_name}")" || die "未知服务：${service_name}"
+  if [ ! -f "${service_file}" ]; then
+    yellow "${service_name} 服务不存在，请先添加对应配置。"
+    return 0
+  fi
+
+  case "${action}" in
+    start) systemctl enable --now "${service_name}" ;;
+    stop) systemctl stop "${service_name}" ;;
+    restart) systemctl restart "${service_name}" ;;
+    *) die "未知服务操作：${action}" ;;
+  esac
+}
+
 color_service_status_word() {
   local status="$1"
 
@@ -6126,12 +6155,12 @@ EOF
     read_input choice
     choice="${choice:-7}"
     case "${choice}" in
-      1) systemctl enable --now xray ;;
-      2) systemctl stop xray ;;
-      3) systemctl restart xray ;;
-      4) systemctl enable --now hysteria-server ;;
-      5) systemctl stop hysteria-server ;;
-      6) systemctl restart hysteria-server ;;
+      1) manage_service xray start ;;
+      2) manage_service xray stop ;;
+      3) manage_service xray restart ;;
+      4) manage_service hysteria-server start ;;
+      5) manage_service hysteria-server stop ;;
+      6) manage_service hysteria-server restart ;;
       7) show_service_status ;;
       8) xray_test_run ;;
       0) return 0 ;;
