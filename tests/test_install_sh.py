@@ -568,6 +568,21 @@ class InstallScriptTests(unittest.TestCase):
 
         self.assertIn("7) uninstall_nat_v2ray; exit 0 ;;", panel_body)
 
+    def test_service_status_hides_missing_cores_and_colors_running(self) -> None:
+        script = read_install_script()
+        status_start = script.index("\ncolor_service_status_word()") + 1
+        status_end = script.index("\nshow_control_panel()", status_start)
+        status_body = script[status_start:status_end]
+
+        self.assertIn("color_service_status_word()", script)
+        self.assertIn("running) printf '\\033[32m%s\\033[0m\\n'", script)
+        self.assertIn('[ "${status}" = "not installed" ] && return 0', status_body)
+        self.assertIn('[ -x "${XRAY_BIN}" ]', status_body)
+        self.assertIn('[ -x "${HYSTERIA_BIN}" ]', status_body)
+        self.assertIn("color_service_status_word", status_body)
+        self.assertNotIn("Xray: not installed", status_body)
+        self.assertNotIn("Hysteria2: not installed", status_body)
+
     def test_control_panel_does_not_print_top_banner(self) -> None:
         script = read_install_script()
         panel_start = script.index("\ncontrol_panel()") + 1

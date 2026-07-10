@@ -5916,6 +5916,28 @@ service_status_word() {
   esac
 }
 
+color_service_status_word() {
+  local status="$1"
+
+  case "${status}" in
+    running) printf '\033[32m%s\033[0m\n' "${status}" ;;
+    failed) printf '\033[31m%s\033[0m\n' "${status}" ;;
+    stopped) printf '\033[33m%s\033[0m\n' "${status}" ;;
+    *) printf '%s\n' "${status}" ;;
+  esac
+}
+
+print_service_status_line() {
+  local core_name="$1"
+  local version="$2"
+  local service_name="$3"
+  local status
+
+  status="$(service_status_word "${service_name}")"
+  [ "${status}" = "not installed" ] && return 0
+  printf '%s %s: %s\n' "${core_name}" "${version}" "$(color_service_status_word "${status}")"
+}
+
 xray_version_label() {
   if [ -x "${XRAY_BIN}" ]; then
     "${XRAY_BIN}" version 2>/dev/null | awk 'NR == 1 { print $2; exit }'
@@ -5934,15 +5956,11 @@ hysteria_version_label() {
 
 show_service_status() {
   if [ -x "${XRAY_BIN}" ]; then
-    printf 'Xray %s: %s\n' "$(xray_version_label)" "$(service_status_word xray)"
-  else
-    printf 'Xray: not installed\n'
+    print_service_status_line "Xray" "$(xray_version_label)" "xray"
   fi
 
   if [ -x "${HYSTERIA_BIN}" ]; then
-    printf 'Hysteria2 %s: %s\n' "$(hysteria_version_label)" "$(service_status_word hysteria-server)"
-  else
-    printf 'Hysteria2: not installed\n'
+    print_service_status_line "Hysteria2" "$(hysteria_version_label)" "hysteria-server"
   fi
 }
 
