@@ -1346,7 +1346,7 @@ install_acme_sh() {
   fi
 
   blue "安装 acme.sh"
-  curl -fsSL https://get.acme.sh | sh -s email="$(prompt_value '请输入证书通知邮箱' 'admin@example.com')"
+  curl -fsSL https://get.acme.sh | sh -s email="$(prompt_value '请输入证书通知邮箱' 'admin@example.com')" --force
   if [ ! -x "${ACME_SH}" ]; then
     die "acme.sh 安装失败"
   fi

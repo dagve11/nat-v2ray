@@ -199,6 +199,15 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("build_vless_ws_tls_uri()", script)
         self.assertIn("build_trojan_tls_uri()", script)
 
+    def test_acme_install_skips_crontab_precheck_on_minimal_systems(self) -> None:
+        script = read_install_script()
+        install_start = script.index("install_acme_sh()")
+        install_end = script.index("\nrequest_tls_cert_manual_dns()", install_start)
+        install_body = script[install_start:install_end]
+
+        self.assertIn("curl -fsSL https://get.acme.sh | sh -s email=", install_body)
+        self.assertIn("--force", install_body)
+
     def test_vless_plain_protocols_render_xray_configs_and_links(self) -> None:
         script = read_install_script()
 
