@@ -734,14 +734,24 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_runtime_management_checks_service_files_before_systemctl(self) -> None:
         script = read_install_script()
+        repair_start = script.index("\nrepair_missing_service()") + 1
+        repair_end = script.index("\nmanage_service()", repair_start)
+        repair_body = script[repair_start:repair_end]
         runtime_start = script.index("\nruntime_management()") + 1
         runtime_end = script.index("\nupdate_nv_command()", runtime_start)
         runtime_body = script[runtime_start:runtime_end]
 
         self.assertIn("manage_service()", script)
+        self.assertIn("repair_missing_service()", script)
         self.assertIn('service_file_for_name()', script)
         self.assertIn('if [ ! -f "${service_file}" ]; then', script)
-        self.assertIn("服务不存在，请先添加对应配置", script)
+        self.assertIn('write_xray_service', repair_body)
+        self.assertIn('write_hy2_service', repair_body)
+        self.assertIn('[ -f "${XRAY_CONFIG_FILE}" ] || return 1', repair_body)
+        self.assertIn('[ -f "${HY2_CONFIG_FILE}" ] || return 1', repair_body)
+        self.assertIn('repair_missing_service "${service_name}"', script)
+        self.assertIn("服务未配置，请先选择 1) 添加配置", script)
+        self.assertIn("仅安装核心不能启动节点", script)
         self.assertIn('manage_service xray start', runtime_body)
         self.assertIn('manage_service xray stop', runtime_body)
         self.assertIn('manage_service xray restart', runtime_body)

@@ -6078,6 +6078,29 @@ service_file_for_name() {
   esac
 }
 
+repair_missing_service() {
+  local service_name="$1"
+
+  case "${service_name}" in
+    xray)
+      [ -x "${XRAY_BIN}" ] || return 1
+      [ -f "${XRAY_CONFIG_FILE}" ] || return 1
+      write_xray_service
+      ;;
+    hysteria-server)
+      [ -x "${HYSTERIA_BIN}" ] || return 1
+      [ -f "${HY2_CONFIG_FILE}" ] || return 1
+      write_hy2_service
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  return 0
+}
+
 manage_service() {
   local service_name="$1"
   local action="$2"
@@ -6085,8 +6108,17 @@ manage_service() {
 
   service_file="$(service_file_for_name "${service_name}")" || die "未知服务：${service_name}"
   if [ ! -f "${service_file}" ]; then
-    yellow "${service_name} 服务不存在，请先添加对应配置。"
-    return 0
+    if [ "${action}" = "start" ] || [ "${action}" = "restart" ]; then
+      if repair_missing_service "${service_name}"; then
+        green "${service_name} 服务文件已补齐"
+      else
+        yellow "${service_name} 服务未配置，请先选择 1) 添加配置。仅安装核心不能启动节点。"
+        return 0
+      fi
+    else
+      yellow "${service_name} 服务未配置，无需停止。"
+      return 0
+    fi
   fi
 
   case "${action}" in
