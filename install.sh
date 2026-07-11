@@ -22,7 +22,8 @@ XRAY_SERVICE_FILE="/etc/systemd/system/xray.service"
 CERT_BASE_DIR="/etc/nat-v2ray/certs"
 ACME_SH="${HOME}/.acme.sh/acme.sh"
 ACME_LE_ACCOUNT_DIR="${HOME}/.acme.sh/ca/acme-v02.api.letsencrypt.org/directory"
-ACME_INSTALLER="/tmp/nat-v2ray-acme.sh"
+ACME_INSTALLER_DIR="/tmp/nat-v2ray-acme"
+ACME_INSTALLER="${ACME_INSTALLER_DIR}/acme.sh"
 
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -1472,6 +1473,7 @@ download_acme_installer() {
   fi
 
   blue "下载 acme.sh 安装器"
+  mkdir -p "${ACME_INSTALLER_DIR}"
   curl -fsSL https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh -o "${ACME_INSTALLER}" || die "acme.sh 安装脚本下载失败"
   chmod 600 "${ACME_INSTALLER}" 2>/dev/null || true
   green "acme.sh 安装器已下载：${ACME_INSTALLER}"
@@ -1481,10 +1483,10 @@ install_acme_sh() {
   if [ ! -x "${ACME_SH}" ]; then
     blue "安装 acme.sh"
     download_acme_installer
-    if ! sh "${ACME_INSTALLER}" --install --force; then
+    if ! (cd "${ACME_INSTALLER_DIR}" && sh ./acme.sh --install --force); then
       die "acme.sh 安装失败"
     fi
-    rm -f "${ACME_INSTALLER}"
+    rm -rf "${ACME_INSTALLER_DIR}"
   fi
   if [ ! -x "${ACME_SH}" ]; then
     die "acme.sh 安装失败"
