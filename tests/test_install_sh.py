@@ -214,7 +214,7 @@ class InstallScriptTests(unittest.TestCase):
 
         self.assertIn('local installer="/tmp/nat-v2ray-acme.sh"', install_body)
         self.assertIn('curl -fsSL https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh -o "${installer}"', install_body)
-        self.assertIn('sh "${installer}" --install-online --force', install_body)
+        self.assertIn('sh "${installer}" --force --install-online', install_body)
         self.assertIn('rm -f "${installer}"', install_body)
         self.assertNotIn("get.acme.sh", install_body)
         self.assertNotIn("sh -s", install_body)

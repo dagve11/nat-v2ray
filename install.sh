@@ -1470,7 +1470,7 @@ install_acme_sh() {
   if [ ! -x "${ACME_SH}" ]; then
     blue "安装 acme.sh"
     curl -fsSL https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh -o "${installer}" || die "acme.sh 安装脚本下载失败"
-    if ! sh "${installer}" --install-online --force; then
+    if ! sh "${installer}" --force --install-online; then
       rm -f "${installer}"
       die "acme.sh 安装失败"
     fi
