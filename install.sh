@@ -145,6 +145,55 @@ validate_port_range() {
   validate_port "${start_port}" && validate_port "${end_port}" && [ "${start_port}" -le "${end_port}" ]
 }
 
+validate_acme_email() {
+  local email="$1"
+  local domain
+
+  if ! [[ "${email}" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
+    return 1
+  fi
+
+  domain="${email##*@}"
+  domain="$(printf '%s' "${domain}" | tr '[:upper:]' '[:lower:]')"
+  case "${domain}" in
+    example.com|example.net|example.org|localhost|*.localhost|*.invalid)
+      return 1
+      ;;
+  esac
+}
+
+default_acme_email_for_domain() {
+  local domain="$1"
+
+  if [ -z "${domain}" ] || [[ "${domain}" =~ ^[0-9.]+$ ]] || [[ "${domain}" == *:* ]]; then
+    printf '\n'
+    return 0
+  fi
+
+  printf 'admin@%s\n' "${domain}"
+}
+
+prompt_acme_email() {
+  local domain="$1"
+  local default_email
+  local email
+
+  default_email="$(default_acme_email_for_domain "${domain}")"
+  while true; do
+    if [ -n "${default_email}" ]; then
+      email="$(prompt_value '请输入 Let'\''s Encrypt 账号邮箱，不能使用 example.com' "${default_email}")"
+    else
+      printf "请输入 Let's Encrypt 账号邮箱，不能使用 example.com: " >&2
+      read_input email
+    fi
+    if validate_acme_email "${email}"; then
+      printf '%s\n' "${email}"
+      return 0
+    fi
+    yellow "邮箱无效，不能使用 example.com/example.net/example.org 等保留域名" >&2
+  done
+}
+
 port_range_span() {
   local port_range="$1"
   local start_port="${port_range%-*}"
@@ -1387,12 +1436,50 @@ wait_for_txt_record() {
 install_acme_sh() {
   if [ ! -x "${ACME_SH}" ]; then
     blue "安装 acme.sh"
-    curl -fsSL https://get.acme.sh | sh -s email="$(prompt_value '请输入证书通知邮箱' 'admin@example.com')" --force
+    curl -fsSL https://get.acme.sh | sh -s --force
   fi
   if [ ! -x "${ACME_SH}" ]; then
     die "acme.sh 安装失败"
   fi
   "${ACME_SH}" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
+}
+
+configured_acme_email() {
+  local conf
+  local line
+  local email
+
+  for conf in \
+    "${HOME}/.acme.sh/ca/acme-v02.api.letsencrypt.org/directory/account.conf" \
+    "${HOME}/.acme.sh/account.conf"; do
+    [ -f "${conf}" ] || continue
+    line="$(grep -E '^ACCOUNT_EMAIL=' "${conf}" 2>/dev/null | tail -n 1 || true)"
+    [ -n "${line}" ] || continue
+    email="${line#ACCOUNT_EMAIL=}"
+    email="${email#\'}"
+    email="${email%\'}"
+    email="${email#\"}"
+    email="${email%\"}"
+    if [ -n "${email}" ]; then
+      printf '%s\n' "${email}"
+      return 0
+    fi
+  done
+}
+
+ensure_letsencrypt_account() {
+  local domain="$1"
+  local account_email
+
+  account_email="$(configured_acme_email || true)"
+  if ! validate_acme_email "${account_email}"; then
+    if [ -n "${account_email}" ]; then
+      yellow "当前 acme.sh 邮箱 ${account_email} 不可用于 Let's Encrypt，将重新设置。"
+    fi
+    account_email="$(prompt_acme_email "${domain}")"
+  fi
+
+  "${ACME_SH}" --server letsencrypt --register-account -m "${account_email}" >/dev/null || die "Let's Encrypt 账号注册失败，请检查邮箱、网络和内存后重试"
 }
 
 cert_dir_for_domain() {
@@ -1420,6 +1507,7 @@ request_tls_cert_manual_dns() {
   require_root
   install_base_packages
   install_acme_sh
+  ensure_letsencrypt_account "${domain}"
 
   cert_dir="$(cert_dir_for_domain "${domain}")"
   key_file="${cert_dir}/private.key"

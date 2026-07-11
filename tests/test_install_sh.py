@@ -211,12 +211,32 @@ class InstallScriptTests(unittest.TestCase):
         install_end = script.index("\nrequest_tls_cert_manual_dns()", install_start)
         install_body = script[install_start:install_end]
 
-        self.assertIn("curl -fsSL https://get.acme.sh | sh -s email=", install_body)
+        self.assertIn("curl -fsSL https://get.acme.sh | sh -s --force", install_body)
         self.assertIn("--force", install_body)
+        self.assertNotIn("admin@example.com", install_body)
+        self.assertIn("ensure_letsencrypt_account()", install_body)
+        self.assertIn("--register-account -m", install_body)
         self.assertLess(
             install_body.index('if [ ! -x "${ACME_SH}" ]; then'),
             install_body.index('"${ACME_SH}" --set-default-ca --server letsencrypt'),
         )
+
+    def test_acme_email_rejects_example_domain_before_letsencrypt_registration(self) -> None:
+        script = read_install_script()
+        email_start = script.index("validate_acme_email()")
+        email_end = script.index("\nport_range_span()", email_start)
+        email_body = script[email_start:email_end]
+        install_start = script.index("install_acme_sh()")
+        install_end = script.index("\nrequest_tls_cert_manual_dns()", install_start)
+        install_body = script[install_start:install_end]
+
+        self.assertIn("example.com|example.net|example.org", email_body)
+        self.assertIn("prompt_acme_email()", email_body)
+        self.assertIn("default_acme_email_for_domain()", email_body)
+        self.assertIn("configured_acme_email()", install_body)
+        self.assertIn('if ! validate_acme_email "${account_email}"; then', install_body)
+        self.assertIn('account_email="$(prompt_acme_email "${domain}")"', install_body)
+        self.assertNotIn("admin@example.com", script)
 
     def test_tls_certificate_flow_forces_letsencrypt_and_stops_without_txt(self) -> None:
         script = read_install_script()
@@ -224,6 +244,7 @@ class InstallScriptTests(unittest.TestCase):
         cert_end = script.index("\nrender_vless_tcp_tls_config()", cert_start)
         cert_body = script[cert_start:cert_end]
 
+        self.assertIn('ensure_letsencrypt_account "${domain}"', cert_body)
         self.assertIn("--server letsencrypt --issue --dns", cert_body)
         self.assertIn("--server letsencrypt --renew", cert_body)
         self.assertIn('if [ -z "${txt_value}" ] && [ "${rc}" -ne 0 ]; then', cert_body)
