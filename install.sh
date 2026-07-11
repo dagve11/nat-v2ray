@@ -987,7 +987,9 @@ delete_xray_profile() {
   if [ "$(xray_profile_count)" -gt 0 ]; then
     systemctl restart xray || true
   else
-    systemctl stop xray >/dev/null 2>&1 || true
+    systemctl disable --now xray >/dev/null 2>&1 || true
+    rm -f "${XRAY_CONFIG_FILE}" "${XRAY_ENV_FILE}" "${XRAY_SERVICE_FILE}"
+    systemctl daemon-reload >/dev/null 2>&1 || true
   fi
   green "已删除 Xray profile：${profile_name}"
 }
@@ -6295,7 +6297,8 @@ EOF
     1) delete_xray_profile ;;
     2)
       systemctl disable --now hysteria-server >/dev/null 2>&1 || true
-      rm -f "${HY2_CONFIG_FILE}" "${HY2_ENV_FILE}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}"
+      rm -f "${HY2_CONFIG_FILE}" "${HY2_ENV_FILE}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}" "${HY2_SERVICE_FILE}"
+      systemctl daemon-reload >/dev/null 2>&1 || true
       green "HY2 配置已删除"
       ;;
     3)
@@ -6305,9 +6308,10 @@ EOF
       fi
       systemctl disable --now xray >/dev/null 2>&1 || true
       systemctl disable --now hysteria-server >/dev/null 2>&1 || true
-      rm -f "${XRAY_CONFIG_FILE}" "${XRAY_ENV_FILE}"
+      rm -f "${XRAY_CONFIG_FILE}" "${XRAY_ENV_FILE}" "${XRAY_SERVICE_FILE}"
       rm -f "${XRAY_PROFILE_DIR}"/*.json "${XRAY_PROFILE_DIR}"/*.env 2>/dev/null || true
-      rm -f "${HY2_CONFIG_FILE}" "${HY2_ENV_FILE}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}"
+      rm -f "${HY2_CONFIG_FILE}" "${HY2_ENV_FILE}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}" "${HY2_SERVICE_FILE}"
+      systemctl daemon-reload >/dev/null 2>&1 || true
       green "全部配置已删除"
       ;;
     0) return 0 ;;
@@ -6641,7 +6645,14 @@ install_missing_dependencies() {
   if ! dependency_present "acme.sh"; then
     install_dependency_by_name "acme.sh"
   fi
-  green "依赖检查完成"
+
+  while IFS= read -r package; do
+    if ! dependency_present "${package}"; then
+      install_dependency_by_name "${package}"
+    fi
+  done < <(required_core_components)
+
+  green "依赖和核心组件检查完成"
 }
 
 dependency_menu() {

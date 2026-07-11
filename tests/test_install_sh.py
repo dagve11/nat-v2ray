@@ -554,6 +554,9 @@ class InstallScriptTests(unittest.TestCase):
         dependency_start = script.index("\ndependency_menu()") + 1
         dependency_end = script.index("\nshow_about()", dependency_start)
         dependency_body = script[dependency_start:dependency_end]
+        missing_start = script.index("\ninstall_missing_dependencies()") + 1
+        missing_end = script.index("\ndependency_menu()", missing_start)
+        missing_body = script[missing_start:missing_end]
         main_start = script.index("\nmain()") + 1
         main_end = script.index('\nif [ "${NAT_V2RAY_LIB_ONLY:-0}"', main_start)
         main_body = script[main_start:main_end]
@@ -579,6 +582,13 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("Hysteria2-core", script)
         self.assertIn("xray-core) install_base_packages; install_xray_binary ;;", script)
         self.assertIn("hysteria2-core) install_base_packages; install_hysteria_binary ;;", script)
+        self.assertIn("done < <(required_base_packages)", missing_body)
+        self.assertIn('if ! dependency_present "acme.sh"; then', missing_body)
+        self.assertIn("done < <(required_core_components)", missing_body)
+        self.assertLess(
+            missing_body.index("done < <(required_base_packages)"),
+            missing_body.index("done < <(required_core_components)"),
+        )
         for package in ("curl", "openssl", "ca-certificates", "iproute2", "dnsutils", "unzip", "jq"):
             self.assertIn(package, script)
 
@@ -685,6 +695,22 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("render_kcp_finalmask_udp()", script)
         self.assertIn("render_legacy_kcp_settings()", script)
         self.assertIn("26.1.24", script)
+
+    def test_delete_config_removes_service_files_when_no_config_remains(self) -> None:
+        script = read_install_script()
+        delete_profile_start = script.index("\ndelete_xray_profile()") + 1
+        delete_profile_end = script.index("\nrandom_uuid()", delete_profile_start)
+        delete_profile_body = script[delete_profile_start:delete_profile_end]
+        delete_config_start = script.index("\ndelete_config()") + 1
+        delete_config_end = script.index("\nruntime_management()", delete_config_start)
+        delete_config_body = script[delete_config_start:delete_config_end]
+
+        self.assertIn('systemctl disable --now xray', delete_profile_body)
+        self.assertIn('rm -f "${XRAY_CONFIG_FILE}" "${XRAY_ENV_FILE}" "${XRAY_SERVICE_FILE}"', delete_profile_body)
+        self.assertIn('systemctl daemon-reload', delete_profile_body)
+        self.assertIn('"${HY2_SERVICE_FILE}"', delete_config_body)
+        self.assertIn('"${XRAY_SERVICE_FILE}"', delete_config_body)
+        self.assertIn('systemctl daemon-reload', delete_config_body)
 
     def test_uninstall_removes_all_owned_files_like_233boy(self) -> None:
         script = read_install_script()

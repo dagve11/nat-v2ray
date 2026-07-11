@@ -62,9 +62,8 @@ HY2 使用自签证书时，脚本会同时生成两条链接：
 `nv` 会打开 233boy 风格的总控台：
 
 ```text
-------------- nat-v2ray 0.17.1 -------------
+------------- nat-v2ray 0.17.1 by AG666 -------------
 Xray 26.3.27: running
-Hysteria2: not installed
 命令: nv
 仓库: https://github.com/dagve11/nat-v2ray
 
@@ -164,6 +163,8 @@ Dynamic port 和 mKCP dynamic port 会要求输入本机端口范围和外网端
 ## TLS TXT 流程
 
 涉及证书签发的协议会走 DNS-01 手动 TXT 验证。
+
+脚本会根据证书域名自动生成 Let's Encrypt 账号邮箱。例如证书域名为 `hi.natv.cc.cd` 时，会使用 `admin@hi.natv.cc.cd`，并清理旧的无效 `example.com` 账号缓存。
 
 脚本会显示需要添加的 TXT 记录，例如：
 
