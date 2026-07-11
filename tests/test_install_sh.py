@@ -712,12 +712,19 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_service_status_hides_missing_cores_and_colors_running(self) -> None:
         script = read_install_script()
+        service_start = script.index("\nservice_status_word()") + 1
+        service_end = script.index("\nservice_file_for_name()", service_start)
+        service_body = script[service_start:service_end]
         status_start = script.index("\ncolor_service_status_word()") + 1
         status_end = script.index("\nshow_control_panel()", status_start)
         status_body = script[status_start:status_end]
 
         self.assertIn("color_service_status_word()", script)
         self.assertIn("running) printf '\\033[32m%s\\033[0m\\n'", script)
+        self.assertIn('service_file="$(service_file_for_name "${service_name}" || true)"', service_body)
+        self.assertIn('[ -n "${service_file}" ] && [ ! -f "${service_file}" ]', service_body)
+        self.assertIn("not configured", service_body)
+        self.assertIn("stopped|not\\ configured)", status_body)
         self.assertIn('[ "${status}" = "not installed" ] && return 0', status_body)
         self.assertIn('[ -x "${XRAY_BIN}" ]', status_body)
         self.assertIn('[ -x "${HYSTERIA_BIN}" ]', status_body)

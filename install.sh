@@ -6045,7 +6045,14 @@ ensure_nv_command() {
 
 service_status_word() {
   local service_name="$1"
+  local service_file
   local state
+
+  service_file="$(service_file_for_name "${service_name}" || true)"
+  if [ -n "${service_file}" ] && [ ! -f "${service_file}" ]; then
+    printf 'not configured\n'
+    return 0
+  fi
 
   if ! command -v systemctl >/dev/null 2>&1; then
     printf 'unknown\n'
@@ -6057,7 +6064,7 @@ service_status_word() {
     active) printf 'running\n' ;;
     inactive) printf 'stopped\n' ;;
     failed) printf 'failed\n' ;;
-    *) printf 'not installed\n' ;;
+    *) printf 'not configured\n' ;;
   esac
 }
 
@@ -6096,7 +6103,7 @@ color_service_status_word() {
   case "${status}" in
     running) printf '\033[32m%s\033[0m\n' "${status}" ;;
     failed) printf '\033[31m%s\033[0m\n' "${status}" ;;
-    stopped) printf '\033[33m%s\033[0m\n' "${status}" ;;
+    stopped|not\ configured) printf '\033[33m%s\033[0m\n' "${status}" ;;
     *) printf '%s\n' "${status}" ;;
   esac
 }
