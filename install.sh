@@ -22,6 +22,7 @@ XRAY_SERVICE_FILE="/etc/systemd/system/xray.service"
 CERT_BASE_DIR="/etc/nat-v2ray/certs"
 ACME_SH="${HOME}/.acme.sh/acme.sh"
 ACME_LE_ACCOUNT_DIR="${HOME}/.acme.sh/ca/acme-v02.api.letsencrypt.org/directory"
+ACME_INSTALLER="/tmp/nat-v2ray-acme.sh"
 
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -1464,17 +1465,26 @@ wait_for_txt_record() {
   done
 }
 
-install_acme_sh() {
-  local installer="/tmp/nat-v2ray-acme.sh"
+download_acme_installer() {
+  if [ -f "${ACME_INSTALLER}" ]; then
+    green "acme.sh 安装器已下载：${ACME_INSTALLER}"
+    return 0
+  fi
 
+  blue "下载 acme.sh 安装器"
+  curl -fsSL https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh -o "${ACME_INSTALLER}" || die "acme.sh 安装脚本下载失败"
+  chmod 600 "${ACME_INSTALLER}" 2>/dev/null || true
+  green "acme.sh 安装器已下载：${ACME_INSTALLER}"
+}
+
+install_acme_sh() {
   if [ ! -x "${ACME_SH}" ]; then
     blue "安装 acme.sh"
-    curl -fsSL https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh -o "${installer}" || die "acme.sh 安装脚本下载失败"
-    if ! sh "${installer}" --install --force; then
-      rm -f "${installer}"
+    download_acme_installer
+    if ! sh "${ACME_INSTALLER}" --install --force; then
       die "acme.sh 安装失败"
     fi
-    rm -f "${installer}"
+    rm -f "${ACME_INSTALLER}"
   fi
   if [ ! -x "${ACME_SH}" ]; then
     die "acme.sh 安装失败"
@@ -6541,7 +6551,7 @@ dependency_present() {
   local name="$1"
 
   case "${name}" in
-    acme.sh) [ -x "${ACME_SH}" ] ;;
+    acme.sh) [ -x "${ACME_SH}" ] || [ -f "${ACME_INSTALLER}" ] ;;
     xray-core) [ -x "${XRAY_BIN}" ] ;;
     hysteria2-core) [ -x "${HYSTERIA_BIN}" ] ;;
     *) base_dependency_present "${name}" ;;
@@ -6572,6 +6582,15 @@ dependency_status_label() {
     hysteria2-core)
       if dependency_present "${name}"; then
         printf '\033[32m%s\033[0m\n' "已安装 $(hysteria_version_label)"
+      else
+        printf '\033[33m%s\033[0m\n' "未安装"
+      fi
+      ;;
+    acme.sh)
+      if [ -x "${ACME_SH}" ]; then
+        printf '\033[32m%s\033[0m\n' "已安装"
+      elif [ -f "${ACME_INSTALLER}" ]; then
+        printf '\033[33m%s\033[0m\n' "安装器已下载"
       else
         printf '\033[33m%s\033[0m\n' "未安装"
       fi
@@ -6633,7 +6652,7 @@ install_dependency_by_name() {
   local name="$1"
 
   case "${name}" in
-    acme.sh) install_acme_sh ;;
+    acme.sh) download_acme_installer ;;
     xray-core|hysteria2-core) install_core_component_by_name "${name}" ;;
     curl|openssl|ca-certificates|iproute2|dnsutils|unzip|jq) install_base_package "${name}" ;;
     *) die "未知依赖：${name}" ;;

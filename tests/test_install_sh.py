@@ -208,14 +208,18 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_acme_install_skips_crontab_precheck_on_minimal_systems(self) -> None:
         script = read_install_script()
+        download_start = script.index("download_acme_installer()")
+        download_end = script.index("\ninstall_acme_sh()", download_start)
+        download_body = script[download_start:download_end]
         install_start = script.index("install_acme_sh()")
         install_end = script.index("\nrequest_tls_cert_manual_dns()", install_start)
         install_body = script[install_start:install_end]
 
-        self.assertIn('local installer="/tmp/nat-v2ray-acme.sh"', install_body)
-        self.assertIn('curl -fsSL https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh -o "${installer}"', install_body)
-        self.assertIn('sh "${installer}" --install --force', install_body)
-        self.assertIn('rm -f "${installer}"', install_body)
+        self.assertIn('ACME_INSTALLER="/tmp/nat-v2ray-acme.sh"', script)
+        self.assertIn('curl -fsSL https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh -o "${ACME_INSTALLER}"', download_body)
+        self.assertIn("download_acme_installer", install_body)
+        self.assertIn('sh "${ACME_INSTALLER}" --install --force', install_body)
+        self.assertIn('rm -f "${ACME_INSTALLER}"', install_body)
         self.assertNotIn("get.acme.sh", install_body)
         self.assertNotIn("sh -s", install_body)
         self.assertIn("--force", install_body)
@@ -580,9 +584,13 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("show_dependency_menu()", script)
         self.assertIn("依赖检查", show_dependency_body)
         self.assertIn("核心组件", show_dependency_body)
+        self.assertIn("安装器已下载", script)
         self.assertIn("请选择要安装的依赖编号", dependency_body)
         self.assertIn("a) 安装全部缺失依赖", show_dependency_body)
         self.assertIn("acme.sh", show_dependency_body)
+        self.assertIn('acme.sh) [ -x "${ACME_SH}" ] || [ -f "${ACME_INSTALLER}" ] ;;', script)
+        self.assertIn("acme.sh) download_acme_installer ;;", script)
+        self.assertNotIn("acme.sh) install_acme_sh ;;", script)
         self.assertIn("Xray-core", script)
         self.assertIn("Hysteria2-core", script)
         self.assertIn("xray-core) install_base_packages; install_xray_binary ;;", script)
