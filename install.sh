@@ -1465,12 +1465,12 @@ wait_for_txt_record() {
 }
 
 install_acme_sh() {
-  local installer="/tmp/nat-v2ray-get-acme.sh"
+  local installer="/tmp/nat-v2ray-acme.sh"
 
   if [ ! -x "${ACME_SH}" ]; then
     blue "安装 acme.sh"
-    curl -fsSL https://get.acme.sh -o "${installer}" || die "acme.sh 安装脚本下载失败"
-    if ! sh "${installer}" --force; then
+    curl -fsSL https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh -o "${installer}" || die "acme.sh 安装脚本下载失败"
+    if ! sh "${installer}" --install-online --force; then
       rm -f "${installer}"
       die "acme.sh 安装失败"
     fi

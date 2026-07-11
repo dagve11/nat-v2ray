@@ -212,10 +212,11 @@ class InstallScriptTests(unittest.TestCase):
         install_end = script.index("\nrequest_tls_cert_manual_dns()", install_start)
         install_body = script[install_start:install_end]
 
-        self.assertIn('local installer="/tmp/nat-v2ray-get-acme.sh"', install_body)
-        self.assertIn('curl -fsSL https://get.acme.sh -o "${installer}"', install_body)
-        self.assertIn('sh "${installer}" --force', install_body)
+        self.assertIn('local installer="/tmp/nat-v2ray-acme.sh"', install_body)
+        self.assertIn('curl -fsSL https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh -o "${installer}"', install_body)
+        self.assertIn('sh "${installer}" --install-online --force', install_body)
         self.assertIn('rm -f "${installer}"', install_body)
+        self.assertNotIn("get.acme.sh", install_body)
         self.assertNotIn("sh -s", install_body)
         self.assertIn("--force", install_body)
         self.assertNotIn("admin@example.com", install_body)
