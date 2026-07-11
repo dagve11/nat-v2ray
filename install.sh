@@ -67,7 +67,6 @@ read_input() {
   if [ -t 0 ]; then
     configure_readline_keys
     IFS= read -r -e "${target}"
-    printf '\n' >&2
   else
     IFS= read -r "${target}"
   fi

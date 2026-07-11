@@ -108,7 +108,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("add|install|protocol)", script)
         self.assertIn("install -m 0755", script)
 
-    def test_interactive_reads_force_newline_after_input(self) -> None:
+    def test_interactive_reads_do_not_force_extra_blank_lines(self) -> None:
         script = read_install_script()
         control_start = script.index("control_panel()")
         control_end = script.index("protocol_menu()", control_start)
@@ -125,7 +125,8 @@ class InstallScriptTests(unittest.TestCase):
 
         self.assertIn("prompt_menu_choice()", script)
         self.assertIn("read_input()", script)
-        self.assertIn("IFS= read -r -e \"${target}\"\n    printf '\\n' >&2", read_body)
+        self.assertIn('IFS= read -r -e "${target}"', read_body)
+        self.assertNotIn("printf '\\n' >&2", read_body)
         self.assertNotIn("printf '\\n' >&2", prompt_body)
         self.assertIn("printf '%s\\n' \"${value:-${default_value}}\"", prompt_body)
         self.assertIn("choice=\"$(prompt_menu_choice '请选择' '1-10' '1')\"", control_body)
