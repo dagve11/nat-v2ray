@@ -212,7 +212,7 @@ class InstallScriptTests(unittest.TestCase):
         install_end = script.index("\nrequest_tls_cert_manual_dns()", install_start)
         install_body = script[install_start:install_end]
 
-        self.assertIn("curl -fsSL https://get.acme.sh | sh -s --force", install_body)
+        self.assertIn("curl -fsSL https://get.acme.sh | sh -s -- --force", install_body)
         self.assertIn("--force", install_body)
         self.assertNotIn("admin@example.com", install_body)
         self.assertIn("ensure_letsencrypt_account()", install_body)

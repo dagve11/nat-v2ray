@@ -1467,7 +1467,7 @@ wait_for_txt_record() {
 install_acme_sh() {
   if [ ! -x "${ACME_SH}" ]; then
     blue "安装 acme.sh"
-    curl -fsSL https://get.acme.sh | sh -s --force
+    curl -fsSL https://get.acme.sh | sh -s -- --force
   fi
   if [ ! -x "${ACME_SH}" ]; then
     die "acme.sh 安装失败"
