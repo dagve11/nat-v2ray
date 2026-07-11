@@ -233,9 +233,18 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("example.com|example.net|example.org", email_body)
         self.assertIn("prompt_acme_email()", email_body)
         self.assertIn("default_acme_email_for_domain()", email_body)
+        self.assertIn('printf \'admin@%s\\n\' "${domain}"', email_body)
+        self.assertIn('if validate_acme_email "${default_email}"; then', email_body)
+        self.assertIn('printf \'%s\\n\' "${default_email}"', email_body)
+        self.assertIn("clear_invalid_letsencrypt_account()", email_body)
+        self.assertIn('rm -rf "${ACME_LE_ACCOUNT_DIR}"', email_body)
+        self.assertIn("sed -i '/^ACCOUNT_EMAIL=/d'", email_body)
         self.assertIn("configured_acme_email()", install_body)
         self.assertIn('if ! validate_acme_email "${account_email}"; then', install_body)
+        self.assertIn('clear_invalid_letsencrypt_account "${account_email}"', install_body)
         self.assertIn('account_email="$(prompt_acme_email "${domain}")"', install_body)
+        self.assertIn('register_output="$("${ACME_SH}" --server letsencrypt --register-account -m "${account_email}" 2>&1)"', install_body)
+        self.assertIn('printf \'%s\\n\' "${register_output}"', install_body)
         self.assertNotIn("admin@example.com", script)
 
     def test_tls_certificate_flow_forces_letsencrypt_and_stops_without_txt(self) -> None:

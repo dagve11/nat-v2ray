@@ -21,6 +21,7 @@ XRAY_PROFILE_DIR="${XRAY_CONFIG_DIR}/profiles"
 XRAY_SERVICE_FILE="/etc/systemd/system/xray.service"
 CERT_BASE_DIR="/etc/nat-v2ray/certs"
 ACME_SH="${HOME}/.acme.sh/acme.sh"
+ACME_LE_ACCOUNT_DIR="${HOME}/.acme.sh/ca/acme-v02.api.letsencrypt.org/directory"
 
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -177,14 +178,27 @@ prompt_acme_email() {
   local domain="$1"
   local default_email
   local email
+  local email_domain
 
   default_email="$(default_acme_email_for_domain "${domain}")"
+  if validate_acme_email "${default_email}"; then
+    green "Let's Encrypt 账号邮箱：${default_email}" >&2
+    printf '%s\n' "${default_email}"
+    return 0
+  fi
+
+  yellow "Let's Encrypt 不接受 example.com/example.net/example.org 等保留域名。" >&2
   while true; do
     if [ -n "${default_email}" ]; then
-      email="$(prompt_value '请输入 Let'\''s Encrypt 账号邮箱，不能使用 example.com' "${default_email}")"
+      email="$(prompt_value '邮箱' "${default_email}")"
     else
-      printf "请输入 Let's Encrypt 账号邮箱，不能使用 example.com: " >&2
+      printf "邮箱: " >&2
       read_input email
+    fi
+    if [[ "${email}" == *@ ]]; then
+      printf "邮箱域名: " >&2
+      read_input email_domain
+      email="${email}${email_domain}"
     fi
     if validate_acme_email "${email}"; then
       printf '%s\n' "${email}"
@@ -192,6 +206,22 @@ prompt_acme_email() {
     fi
     yellow "邮箱无效，不能使用 example.com/example.net/example.org 等保留域名" >&2
   done
+}
+
+clear_invalid_letsencrypt_account() {
+  local email="$1"
+  local account_conf="${HOME}/.acme.sh/account.conf"
+
+  if [ -z "${email}" ] || validate_acme_email "${email}"; then
+    return 0
+  fi
+
+  yellow "清理无效的 Let's Encrypt 账号缓存：${email}"
+  rm -rf "${ACME_LE_ACCOUNT_DIR}"
+  if [ -f "${account_conf}" ]; then
+    cp -a "${account_conf}" "${account_conf}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+    sed -i '/^ACCOUNT_EMAIL=/d' "${account_conf}" 2>/dev/null || true
+  fi
 }
 
 port_range_span() {
@@ -1470,16 +1500,26 @@ configured_acme_email() {
 ensure_letsencrypt_account() {
   local domain="$1"
   local account_email
+  local register_output
+  local rc
 
   account_email="$(configured_acme_email || true)"
   if ! validate_acme_email "${account_email}"; then
     if [ -n "${account_email}" ]; then
       yellow "当前 acme.sh 邮箱 ${account_email} 不可用于 Let's Encrypt，将重新设置。"
+      clear_invalid_letsencrypt_account "${account_email}"
     fi
     account_email="$(prompt_acme_email "${domain}")"
   fi
 
-  "${ACME_SH}" --server letsencrypt --register-account -m "${account_email}" >/dev/null || die "Let's Encrypt 账号注册失败，请检查邮箱、网络和内存后重试"
+  set +e
+  register_output="$("${ACME_SH}" --server letsencrypt --register-account -m "${account_email}" 2>&1)"
+  rc=$?
+  set -e
+  if [ "${rc}" -ne 0 ]; then
+    printf '%s\n' "${register_output}"
+    die "Let's Encrypt 账号注册失败，请检查邮箱、网络和内存后重试"
+  fi
 }
 
 cert_dir_for_domain() {
