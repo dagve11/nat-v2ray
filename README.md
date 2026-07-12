@@ -23,6 +23,15 @@ curl -fsSL -o install.sh https://raw.githubusercontent.com/dagve11/nat-v2ray/mai
 bash install.sh
 ```
 
+Alpine Linux 使用 OpenRC 专用入口：
+
+```bash
+curl -fsSL -o install-alpine.sh https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install-alpine.sh
+sh install-alpine.sh
+```
+
+Alpine 脚本会在缺少 bash 时先通过 `apk` 安装 bash，然后复用主脚本的协议配置逻辑，并生成 OpenRC 服务。
+
 首次运行会安装/修复 `nv` 命令，检测基础依赖并打开总控台，不会自动安装节点。基础依赖只会缺什么装什么，安装失败时才更新 apt 索引后重试。需要单独检查或逐条安装依赖、Xray-core、Hysteria2-core 时选择 `10) 依赖`，或直接输入 `nv deps`。需要安装节点时选择 `1) 添加配置`，或之后直接输入：
 
 ```bash

@@ -6478,6 +6478,7 @@ uninstall_nat_v2ray() {
   rm -rf "${HY2_CONFIG_DIR}"
   rm -rf "${CERT_BASE_DIR}"
   rm -rf /usr/local/share/xray
+  rm -rf /usr/local/lib/nat-v2ray
   rm -rf /var/log/xray
   rm -rf /var/log/hysteria
   rm -rf /var/log/hysteria-server

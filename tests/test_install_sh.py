@@ -4,6 +4,7 @@ import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 INSTALL_SH = os.path.join(ROOT, "install.sh")
+ALPINE_SH = os.path.join(ROOT, "install-alpine.sh")
 
 
 def read_install_script() -> str:
@@ -11,7 +12,36 @@ def read_install_script() -> str:
         return handle.read()
 
 
+def read_alpine_script() -> str:
+    with open(ALPINE_SH, "r", encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
 class InstallScriptTests(unittest.TestCase):
+    def test_alpine_script_reuses_main_protocol_logic_with_openrc_overrides(self) -> None:
+        script = read_alpine_script()
+
+        self.assertIn("#!/bin/sh", script)
+        self.assertIn("apk add --no-cache bash", script)
+        self.assertIn('ALPINE_LIB_DIR="/usr/local/lib/nat-v2ray"', script)
+        self.assertIn('MAIN_SCRIPT="${ALPINE_LIB_DIR}/install.sh"', script)
+        self.assertIn('NAT_V2RAY_LIB_ONLY=1 source "${MAIN_SCRIPT}"', script)
+        self.assertIn('SCRIPT_URL="https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install-alpine.sh"', script)
+        self.assertIn('XRAY_SERVICE_FILE="/etc/init.d/xray"', script)
+        self.assertIn('HY2_SERVICE_FILE="/etc/init.d/hysteria-server"', script)
+        self.assertIn("apk add --no-cache", script)
+        self.assertIn("dnsutils) printf 'bind-tools\\n'", script)
+        self.assertIn("write_xray_service()", script)
+        self.assertIn("write_hy2_service()", script)
+        self.assertIn("#!/sbin/openrc-run", script)
+        self.assertIn("systemctl()", script)
+        self.assertIn("rc-service", script)
+        self.assertIn("rc-update", script)
+        self.assertIn('install -m 0644 "${MAIN_SCRIPT}" "${ALPINE_LIB_DIR}/install.sh"', script)
+        self.assertIn("update_nv_command()", script)
+        self.assertIn('curl -fsSL -o "${temp_main}" "https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install.sh"', script)
+        self.assertIn('main "$@"', script)
+
     def test_hy2_config_contains_nat_safe_defaults(self) -> None:
         script = read_install_script()
 
@@ -754,6 +784,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('rm -rf "${XRAY_CONFIG_DIR}"', uninstall_body)
         self.assertIn('rm -rf "${HY2_CONFIG_DIR}"', uninstall_body)
         self.assertIn('rm -rf /usr/local/share/xray', uninstall_body)
+        self.assertIn('rm -rf /usr/local/lib/nat-v2ray', uninstall_body)
         self.assertIn('rm -rf /var/log/xray', uninstall_body)
         self.assertIn('rm -rf /var/log/hysteria', uninstall_body)
         self.assertIn('rm -f "${XRAY_BIN}" "${HYSTERIA_BIN}" "${NV_BIN}"', uninstall_body)
