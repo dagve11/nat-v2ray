@@ -220,13 +220,29 @@ journalctl() {
   [ -f "${line}" ] && tail -n 80 "${line}"
 }
 
+same_path() {
+  local left="$1"
+  local right="$2"
+  local left_real
+  local right_real
+
+  left_real="$(readlink -f "${left}" 2>/dev/null || printf '%s' "${left}")"
+  right_real="$(readlink -f "${right}" 2>/dev/null || printf '%s' "${right}")"
+  [ "${left_real}" = "${right_real}" ]
+}
+
 ensure_nv_command() {
   local source_path="${ALPINE_SOURCE}"
+  local main_target="${ALPINE_LIB_DIR}/install.sh"
 
   require_root
   mkdir -p "${ALPINE_LIB_DIR}"
-  install -m 0644 "${MAIN_SCRIPT}" "${ALPINE_LIB_DIR}/install.sh"
-  install -m 0755 "${source_path}" "${NV_BIN}"
+  if ! same_path "${MAIN_SCRIPT}" "${main_target}"; then
+    install -m 0644 "${MAIN_SCRIPT}" "${main_target}"
+  fi
+  if ! same_path "${source_path}" "${NV_BIN}"; then
+    install -m 0755 "${source_path}" "${NV_BIN}"
+  fi
 }
 
 update_nv_command() {
