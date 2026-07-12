@@ -825,6 +825,22 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("show_control_panel", panel_body)
         self.assertIn("\n  banner\n", protocol_body)
 
+    def test_protocol_menu_exits_after_successful_install(self) -> None:
+        script = read_install_script()
+        helper_start = script.index("\nrun_protocol_install_by_choice()") + 1
+        helper_end = script.index("\nprotocol_menu()", helper_start)
+        helper_body = script[helper_start:helper_end]
+        protocol_start = script.index("\nprotocol_menu()") + 1
+        protocol_end = script.index("\nmain()", protocol_start)
+        protocol_body = script[protocol_start:protocol_end]
+
+        self.assertIn("run_protocol_install_by_choice()", script)
+        self.assertIn("1) hy2_install ;;", helper_body)
+        self.assertIn("39) trojan_xhttp_tls_install ;;", helper_body)
+        self.assertIn('31) txt_check_tool ;;', protocol_body)
+        self.assertIn('if run_protocol_install_by_choice "${choice}"; then', protocol_body)
+        self.assertIn("exit 0", protocol_body)
+
 
 if __name__ == "__main__":
     unittest.main()

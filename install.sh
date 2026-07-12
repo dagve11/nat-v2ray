@@ -6762,6 +6762,52 @@ control_panel() {
   done
 }
 
+run_protocol_install_by_choice() {
+  local choice="$1"
+
+  case "${choice}" in
+    1) hy2_install ;;
+    2) reality_install ;;
+    3) vless_ws_tls_install ;;
+    4) trojan_tls_install ;;
+    5) vmess_tcp_install ;;
+    6) vmess_ws_install ;;
+    7) shadowsocks_install ;;
+    8) vmess_ws_tls_install ;;
+    9) vmess_grpc_tls_install ;;
+    10) vless_grpc_tls_install ;;
+    11) trojan_ws_tls_install ;;
+    12) trojan_grpc_tls_install ;;
+    13) vmess_mkcp_install ;;
+    14) vmess_mkcp_dynamic_install ;;
+    15) vless_tcp_install ;;
+    16) vless_ws_install ;;
+    17) vless_mkcp_install ;;
+    18) vless_mkcp_dynamic_install ;;
+    19) vmess_tcp_dynamic_install ;;
+    20) vmess_ws_dynamic_install ;;
+    21) vless_tcp_dynamic_install ;;
+    22) vless_ws_dynamic_install ;;
+    23) vless_tcp_tls_install ;;
+    24) vmess_tcp_tls_install ;;
+    25) vless_httpupgrade_install ;;
+    26) vmess_httpupgrade_install ;;
+    27) vless_grpc_install ;;
+    28) vmess_grpc_install ;;
+    29) vless_xhttp_install ;;
+    30) vmess_xhttp_install ;;
+    32) trojan_tcp_install ;;
+    33) trojan_ws_install ;;
+    34) trojan_httpupgrade_install ;;
+    35) trojan_grpc_install ;;
+    36) trojan_xhttp_install ;;
+    37) vless_xhttp_tls_install ;;
+    38) vmess_xhttp_tls_install ;;
+    39) trojan_xhttp_tls_install ;;
+    *) return 1 ;;
+  esac
+}
+
 protocol_menu() {
   local choice
   banner
@@ -6769,47 +6815,14 @@ protocol_menu() {
     show_menu
     choice="$(prompt_menu_choice '请输入选项' '1' '1')"
     case "${choice}" in
-      1) hy2_install ;;
-      2) reality_install ;;
-      3) vless_ws_tls_install ;;
-      4) trojan_tls_install ;;
-      5) vmess_tcp_install ;;
-      6) vmess_ws_install ;;
-      7) shadowsocks_install ;;
-      8) vmess_ws_tls_install ;;
-      9) vmess_grpc_tls_install ;;
-      10) vless_grpc_tls_install ;;
-      11) trojan_ws_tls_install ;;
-      12) trojan_grpc_tls_install ;;
-      13) vmess_mkcp_install ;;
-      14) vmess_mkcp_dynamic_install ;;
-      15) vless_tcp_install ;;
-      16) vless_ws_install ;;
-      17) vless_mkcp_install ;;
-      18) vless_mkcp_dynamic_install ;;
-      19) vmess_tcp_dynamic_install ;;
-      20) vmess_ws_dynamic_install ;;
-      21) vless_tcp_dynamic_install ;;
-      22) vless_ws_dynamic_install ;;
-      23) vless_tcp_tls_install ;;
-      24) vmess_tcp_tls_install ;;
-      25) vless_httpupgrade_install ;;
-      26) vmess_httpupgrade_install ;;
-      27) vless_grpc_install ;;
-      28) vmess_grpc_install ;;
-      29) vless_xhttp_install ;;
-      30) vmess_xhttp_install ;;
       31) txt_check_tool ;;
-      32) trojan_tcp_install ;;
-      33) trojan_ws_install ;;
-      34) trojan_httpupgrade_install ;;
-      35) trojan_grpc_install ;;
-      36) trojan_xhttp_install ;;
-      37) vless_xhttp_tls_install ;;
-      38) vmess_xhttp_tls_install ;;
-      39) trojan_xhttp_tls_install ;;
       0) exit 0 ;;
-      *) yellow "无效选项" ;;
+      *)
+        if run_protocol_install_by_choice "${choice}"; then
+          exit 0
+        fi
+        yellow "无效选项"
+        ;;
     esac
   done
 }
