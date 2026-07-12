@@ -88,11 +88,13 @@ configure_readline_keys() {
 
 read_input() {
   local target="$1"
+  local prompt="${2:-}"
 
   if [ -t 0 ]; then
     configure_readline_keys
-    IFS= read -r -e "${target}"
+    IFS= read -r -e -p "${prompt}" "${target}"
   else
+    printf '%s' "${prompt}" >&2
     IFS= read -r "${target}"
   fi
 }
@@ -102,9 +104,10 @@ prompt_menu_choice() {
   local range_label="$2"
   local default_value="$3"
   local value
+  local prompt
 
-  printf '%s [%s]: ' "${message}" "${range_label}" >&2
-  read_input value
+  printf -v prompt '%s [%s]: ' "${message}" "${range_label}"
+  read_input value "${prompt}"
   printf '%s\n' "${value:-${default_value}}"
 }
 
@@ -112,8 +115,9 @@ prompt_value() {
   local message="$1"
   local default_value="$2"
   local value
-  printf '%s [%s]: ' "${message}" "${default_value}" >&2
-  read_input value
+  local prompt
+  printf -v prompt '%s [%s]: ' "${message}" "${default_value}"
+  read_input value "${prompt}"
   if [ -z "${value}" ]; then
     printf '%s\n' "${default_value}"
   else
@@ -125,9 +129,10 @@ prompt_yes_no() {
   local message="$1"
   local default_value="$2"
   local value
+  local prompt
   while true; do
-    printf '%s [%s]: ' "${message}" "${default_value}" >&2
-    read_input value
+    printf -v prompt '%s [%s]: ' "${message}" "${default_value}"
+    read_input value "${prompt}"
     value="${value:-${default_value}}"
     case "${value}" in
       y|Y|yes|YES) printf '\n' >&2; return 0 ;;
@@ -140,9 +145,10 @@ prompt_yes_no() {
 prompt_required_yes() {
   local message="$1"
   local value
+  local prompt
   while true; do
-    printf '%s ' "${message}" >&2
-    read_input value
+    printf -v prompt '%s ' "${message}"
+    read_input value "${prompt}"
     case "${value}" in
       y|Y|yes|YES) printf '\n' >&2; return 0 ;;
       *) yellow "请输入 (y)" >&2 ;;
@@ -216,12 +222,10 @@ prompt_acme_email() {
     if [ -n "${default_email}" ]; then
       email="$(prompt_value '邮箱' "${default_email}")"
     else
-      printf "邮箱: " >&2
-      read_input email
+      read_input email "邮箱: "
     fi
     if [[ "${email}" == *@ ]]; then
-      printf "邮箱域名: " >&2
-      read_input email_domain
+      read_input email_domain "邮箱域名: "
       email="${email}${email_domain}"
     fi
     if validate_acme_email "${email}"; then
@@ -274,8 +278,7 @@ prompt_optional_port() {
   local message="$1"
   local port
   while true; do
-    printf '%s: ' "${message}" >&2
-    read_input port
+    read_input port "${message}: "
     if [ -z "${port}" ]; then
       printf '\n'
       return 0
@@ -882,8 +885,7 @@ select_xray_profile() {
     printf '  %s) %s\n' "${index}" "${profile}" >&2
     index=$((index + 1))
   done
-  printf '请选择 [1]: ' >&2
-  read_input choice
+  read_input choice '请选择 [1]: '
   choice="${choice:-1}"
   if ! [[ "${choice}" =~ ^[0-9]+$ ]] || [ "${choice}" -lt 1 ] || [ "${choice}" -gt "${#profiles[@]}" ]; then
     die "无效 profile 选项"
@@ -1162,16 +1164,14 @@ ensure_port_available() {
   2) 我确认要停用占用端口的 systemd 服务
   3) 退出
 EOF
-    printf '选择 [1]: ' >&2
-    read_input choice
+    read_input choice '选择 [1]: '
     choice="${choice:-1}"
     case "${choice}" in
       1)
         port_ref="$(prompt_port '请输入新的端口' "${port_ref}")"
         ;;
       2)
-        printf '请输入要停用的 systemd 服务名，留空返回: ' >&2
-        read_input service_name
+        read_input service_name '请输入要停用的 systemd 服务名，留空返回: '
         if [ -z "${service_name}" ]; then
           yellow "未输入服务名，返回端口处理菜单"
           continue
@@ -6332,8 +6332,7 @@ delete_config() {
   3) 删除全部配置
   0) 返回
 EOF
-  printf '请选择 [0-3]: ' >&2
-  read_input choice
+  read_input choice '请选择 [0-3]: '
   choice="${choice:-0}"
   case "${choice}" in
     1) delete_xray_profile ;;
@@ -6381,8 +6380,7 @@ runtime_management() {
   8) 测试运行
   0) 返回
 EOF
-    printf '请选择 [0-8]: ' >&2
-    read_input choice
+    read_input choice '请选择 [0-8]: '
     choice="${choice:-7}"
     case "${choice}" in
       1) manage_service xray start ;;
@@ -6559,8 +6557,7 @@ other_tools() {
   4) 测试 Xray 配置
   0) 返回
 EOF
-    printf '请选择 [0-4]: ' >&2
-    read_input choice
+    read_input choice '请选择 [0-4]: '
     choice="${choice:-0}"
     case "${choice}" in
       1) txt_check_tool ;;
@@ -6721,8 +6718,7 @@ dependency_menu() {
 
   while true; do
     show_dependency_menu
-    printf '请选择要安装的依赖编号 [0-%s/a]: ' "${#dependencies[@]}" >&2
-    read_input choice
+    read_input choice "请选择要安装的依赖编号 [0-${#dependencies[@]}/a]: "
     choice="${choice:-0}"
     case "${choice}" in
       0) return 0 ;;
