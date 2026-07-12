@@ -758,6 +758,19 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotIn("read -r choice", script)
         self.assertNotIn("read -r service_name", script)
 
+    def test_all_interactive_prompts_are_owned_by_readline(self) -> None:
+        script = read_install_script()
+        read_calls = [
+            line.strip()
+            for line in script.splitlines()
+            if line.strip().startswith("read_input ") and not line.strip().startswith("read_input()")
+        ]
+
+        self.assertGreater(len(read_calls), 5)
+        for call in read_calls:
+            self.assertRegex(call, r"^read_input [A-Za-z_][A-Za-z0-9_]* (\"|\')")
+        self.assertNotRegex(script, r"printf [^\n]+>&2\n\s*read_input [A-Za-z_][A-Za-z0-9_]*\s*$")
+
     def test_nv_test_and_update_core_geo_are_available(self) -> None:
         script = read_install_script()
 
