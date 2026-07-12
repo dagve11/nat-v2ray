@@ -86,13 +86,24 @@ configure_readline_keys() {
   READLINE_KEYS_CONFIGURED=1
 }
 
+prompt_needs_safe_readline() {
+  local prompt="$1"
+
+  printf '%s' "${prompt}" | LC_ALL=C grep -q '[^ -~]'
+}
+
 read_input() {
   local target="$1"
   local prompt="${2:-}"
+  local edit_prompt="${prompt}"
 
   if [ -t 0 ]; then
     configure_readline_keys
-    IFS= read -r -e -p "${prompt}" "${target}"
+    if prompt_needs_safe_readline "${prompt}"; then
+      printf '%s\n' "${prompt% }" >&2
+      edit_prompt='> '
+    fi
+    IFS= read -r -e -p "${edit_prompt}" "${target}"
   else
     printf '%s' "${prompt}" >&2
     IFS= read -r "${target}"
