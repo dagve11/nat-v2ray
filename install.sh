@@ -5,6 +5,7 @@ VERSION="0.17.1"
 PROJECT_NAME="nat-v2ray"
 REPO_URL="https://github.com/dagve11/nat-v2ray"
 SCRIPT_URL="https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install.sh"
+ALPINE_SCRIPT_URL="https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install-alpine.sh"
 NV_BIN="/usr/local/bin/nv"
 HYSTERIA_BIN="/usr/local/bin/hysteria"
 HY2_CONFIG_DIR="/etc/hysteria"
@@ -30,6 +31,28 @@ green() { printf '\033[32m%s\033[0m\n' "$*"; }
 yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 blue() { printf '\033[34m%s\033[0m\n' "$*"; }
 die() { red "错误：$*"; exit 1; }
+
+handoff_to_alpine_installer() {
+  local alpine_installer="/tmp/nat-v2ray-install-alpine.sh"
+
+  if [ "${NAT_V2RAY_LIB_ONLY:-0}" = "1" ] || [ "${NAT_V2RAY_ALPINE_WRAPPER:-0}" = "1" ]; then
+    return 0
+  fi
+  if [ "$(uname -s)" != "Linux" ] || [ ! -f /etc/alpine-release ]; then
+    return 0
+  fi
+
+  yellow "检测到 Alpine Linux，切换到 Alpine/OpenRC 安装脚本。"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "${ALPINE_SCRIPT_URL}" -o "${alpine_installer}" || die "下载 Alpine 安装脚本失败"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "${alpine_installer}" "${ALPINE_SCRIPT_URL}" || die "下载 Alpine 安装脚本失败"
+  else
+    die "当前是 Alpine，请先安装 curl 或 wget：apk add --no-cache curl"
+  fi
+  chmod +x "${alpine_installer}" 2>/dev/null || true
+  NAT_V2RAY_ALPINE_WRAPPER=1 exec sh "${alpine_installer}" "$@"
+}
 
 banner() {
   cat <<EOF
@@ -6832,6 +6855,7 @@ main() {
   local command="${1:-}"
   local target="${2:-}"
 
+  handoff_to_alpine_installer "$@"
   ensure_nv_command
 
   case "${command}" in

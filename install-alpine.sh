@@ -33,6 +33,7 @@ if [ ! -f "${MAIN_SCRIPT}" ]; then
   fi
 fi
 
+export NAT_V2RAY_ALPINE_WRAPPER=1
 NAT_V2RAY_LIB_ONLY=1 source "${MAIN_SCRIPT}"
 
 SCRIPT_URL="https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install-alpine.sh"

@@ -18,6 +18,22 @@ def read_alpine_script() -> str:
 
 
 class InstallScriptTests(unittest.TestCase):
+    def test_main_script_hands_off_to_alpine_wrapper(self) -> None:
+        script = read_install_script()
+        main_start = script.index("\nmain()") + 1
+        main_end = script.index('\nif [ "${NAT_V2RAY_LIB_ONLY:-0}"', main_start)
+        main_body = script[main_start:main_end]
+
+        self.assertIn('ALPINE_SCRIPT_URL="https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install-alpine.sh"', script)
+        self.assertIn("handoff_to_alpine_installer()", script)
+        self.assertIn("/etc/alpine-release", script)
+        self.assertIn('NAT_V2RAY_ALPINE_WRAPPER=1 exec sh "${alpine_installer}" "$@"', script)
+        self.assertIn('handoff_to_alpine_installer "$@"', main_body)
+        self.assertLess(
+            main_body.index('handoff_to_alpine_installer "$@"'),
+            main_body.index("ensure_nv_command"),
+        )
+
     def test_alpine_script_reuses_main_protocol_logic_with_openrc_overrides(self) -> None:
         script = read_alpine_script()
 
@@ -28,6 +44,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('MAIN_SCRIPT="/tmp/nat-v2ray-alpine-main/install.sh"', script)
         self.assertIn('curl -fsSL https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install.sh -o "${MAIN_SCRIPT}"', script)
         self.assertIn('wget -qO "${MAIN_SCRIPT}" https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install.sh', script)
+        self.assertIn("export NAT_V2RAY_ALPINE_WRAPPER=1", script)
         self.assertIn('NAT_V2RAY_LIB_ONLY=1 source "${MAIN_SCRIPT}"', script)
         self.assertIn('SCRIPT_URL="https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install-alpine.sh"', script)
         self.assertIn('XRAY_SERVICE_FILE="/etc/init.d/xray"', script)
