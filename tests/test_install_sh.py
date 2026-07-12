@@ -179,11 +179,8 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("prompt_menu_choice()", script)
         self.assertIn("read_input()", script)
         self.assertIn('local prompt="${2:-}"', read_body)
-        self.assertIn('local edit_prompt="${prompt}"', read_body)
-        self.assertIn('prompt_needs_safe_readline()', script)
-        self.assertIn("edit_prompt='> '", read_body)
-        self.assertIn('IFS= read -r -e -p "${edit_prompt}" "${target}"', read_body)
         self.assertIn('printf \'%s\' "${prompt}" >&2', read_body)
+        self.assertIn('IFS= read -r "${target}"', read_body)
         self.assertNotIn("printf '\\n' >&2", read_body)
         self.assertNotIn("printf '\\n' >&2", prompt_body)
         self.assertIn("printf -v prompt '%s [%s]: '", prompt_body)
@@ -744,14 +741,20 @@ class InstallScriptTests(unittest.TestCase):
             hy2_install_body.index("兼容链接（旧客户端，insecure=1）"),
         )
 
-    def test_interactive_reads_use_readline_backspace_compatibility(self) -> None:
+    def test_interactive_reads_use_plain_read_like_233boy(self) -> None:
         script = read_install_script()
+        read_start = script.index("read_input()")
+        read_end = script.index("\nprompt_menu_choice()", read_start)
+        read_body = script[read_start:read_end]
 
-        self.assertIn("configure_readline_keys()", script)
         self.assertIn("read_input()", script)
-        self.assertIn('"\\C-h": backward-delete-char', script)
-        self.assertIn('"\\C-?": backward-delete-char', script)
-        self.assertIn('read -r -e -p "${edit_prompt}"', script)
+        self.assertIn('printf \'%s\' "${prompt}" >&2', read_body)
+        self.assertIn('IFS= read -r "${target}"', read_body)
+        self.assertNotIn("configure_readline_keys()", script)
+        self.assertNotIn("bind '", script)
+        self.assertNotIn("read -e", script)
+        self.assertNotIn("read -r -e", script)
+        self.assertNotIn("readline", script.lower())
         self.assertIn("read_input value", script)
         self.assertIn("read_input port", script)
         self.assertIn("read_input choice", script)
@@ -761,7 +764,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotIn("read -r choice", script)
         self.assertNotIn("read -r service_name", script)
 
-    def test_all_interactive_prompts_are_owned_by_readline(self) -> None:
+    def test_all_interactive_prompts_use_read_input_wrapper(self) -> None:
         script = read_install_script()
         read_calls = [
             line.strip()

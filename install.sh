@@ -75,39 +75,12 @@ require_linux() {
   fi
 }
 
-configure_readline_keys() {
-  if [ ! -t 0 ] || [ "${READLINE_KEYS_CONFIGURED:-0}" = "1" ]; then
-    return 0
-  fi
-
-  bind '"\C-h": backward-delete-char' 2>/dev/null || true
-  bind '"\C-?": backward-delete-char' 2>/dev/null || true
-  bind '"\e[3~": delete-char' 2>/dev/null || true
-  READLINE_KEYS_CONFIGURED=1
-}
-
-prompt_needs_safe_readline() {
-  local prompt="$1"
-
-  printf '%s' "${prompt}" | LC_ALL=C grep -q '[^ -~]'
-}
-
 read_input() {
   local target="$1"
   local prompt="${2:-}"
-  local edit_prompt="${prompt}"
 
-  if [ -t 0 ]; then
-    configure_readline_keys
-    if prompt_needs_safe_readline "${prompt}"; then
-      printf '%s\n' "${prompt% }" >&2
-      edit_prompt='> '
-    fi
-    IFS= read -r -e -p "${edit_prompt}" "${target}"
-  else
-    printf '%s' "${prompt}" >&2
-    IFS= read -r "${target}"
-  fi
+  printf '%s' "${prompt}" >&2
+  IFS= read -r "${target}"
 }
 
 prompt_menu_choice() {
