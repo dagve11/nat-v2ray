@@ -21,8 +21,16 @@ if [ ! -f "${MAIN_SCRIPT}" ] && [ -f "${ALPINE_LIB_DIR}/install.sh" ]; then
 fi
 
 if [ ! -f "${MAIN_SCRIPT}" ]; then
-  echo "错误：未找到 install.sh，请把 install-alpine.sh 和 install.sh 放在同一目录后执行" >&2
-  exit 1
+  MAIN_SCRIPT="/tmp/nat-v2ray-alpine-main/install.sh"
+  mkdir -p "$(dirname "${MAIN_SCRIPT}")"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install.sh -o "${MAIN_SCRIPT}"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "${MAIN_SCRIPT}" https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install.sh
+  else
+    echo "错误：未找到 install.sh，且系统缺少 curl/wget，无法自动下载主脚本" >&2
+    exit 1
+  fi
 fi
 
 NAT_V2RAY_LIB_ONLY=1 source "${MAIN_SCRIPT}"
