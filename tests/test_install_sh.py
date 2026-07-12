@@ -132,6 +132,19 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("choice=\"$(prompt_menu_choice '请选择' '1-10' '1')\"", control_body)
         self.assertIn("choice=\"$(prompt_menu_choice '请输入选项' '1' '1')\"", protocol_body)
 
+    def test_confirmation_prompts_print_separator_newline(self) -> None:
+        script = read_install_script()
+        yes_no_start = script.index("prompt_yes_no()")
+        yes_no_end = script.index("\nprompt_required_yes()", yes_no_start)
+        yes_no_body = script[yes_no_start:yes_no_end]
+        required_start = script.index("prompt_required_yes()")
+        required_end = script.index("\nvalidate_port()", required_start)
+        required_body = script[required_start:required_end]
+
+        self.assertIn("y|Y|yes|YES) printf '\\n' >&2; return 0 ;;", yes_no_body)
+        self.assertIn("n|N|no|NO) printf '\\n' >&2; return 1 ;;", yes_no_body)
+        self.assertIn("y|Y|yes|YES) printf '\\n' >&2; return 0 ;;", required_body)
+
     def test_nv_command_is_ensured_before_subcommand_dispatch(self) -> None:
         script = read_install_script()
         main_start = script.rindex("\nmain() {") + 1

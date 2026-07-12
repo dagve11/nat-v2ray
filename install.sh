@@ -107,8 +107,8 @@ prompt_yes_no() {
     read_input value
     value="${value:-${default_value}}"
     case "${value}" in
-      y|Y|yes|YES) return 0 ;;
-      n|N|no|NO) return 1 ;;
+      y|Y|yes|YES) printf '\n' >&2; return 0 ;;
+      n|N|no|NO) printf '\n' >&2; return 1 ;;
       *) yellow "请输入 y 或 n" >&2 ;;
     esac
   done
@@ -121,7 +121,7 @@ prompt_required_yes() {
     printf '%s ' "${message}" >&2
     read_input value
     case "${value}" in
-      y|Y|yes|YES) return 0 ;;
+      y|Y|yes|YES) printf '\n' >&2; return 0 ;;
       *) yellow "请输入 (y)" >&2 ;;
     esac
   done
