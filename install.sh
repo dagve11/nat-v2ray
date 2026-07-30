@@ -470,9 +470,16 @@ is_ipv4() {
   [[ "${value}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
 }
 
+is_ipv6() {
+  local value="$1"
+  [[ "${value}" == *:* && "${value}" != *.* && "${value}" =~ ^[0-9a-fA-F:]+$ ]]
+}
+
 subject_alt_name_for_host() {
   local host="$1"
   if is_ipv4 "${host}"; then
+    printf 'IP:%s\n' "${host}"
+  elif is_ipv6 "${host}"; then
     printf 'IP:%s\n' "${host}"
   else
     printf 'DNS:%s\n' "${host}"
@@ -596,12 +603,17 @@ hysteria_asset_name() {
 }
 
 install_hysteria_binary() {
+  local force="${1:-}"
   local asset
   local url
 
   if [ -x "${HYSTERIA_BIN}" ]; then
-    green "Hysteria2 core 已安装，跳过下载"
-    return 0
+    if [ "${force}" = "force" ]; then
+      yellow "强制更新 Hysteria2 core"
+    else
+      green "Hysteria2 core 已安装，跳过下载"
+      return 0
+    fi
   fi
 
   asset="$(hysteria_asset_name)"
@@ -624,14 +636,19 @@ xray_asset_name() {
 }
 
 install_xray_binary() {
+  local force="${1:-}"
   local asset
   local url
   local work_dir
 
   if [ -x "${XRAY_BIN}" ]; then
-    green "Xray core 已安装，跳过下载"
-    migrate_legacy_xray_profile
-    return 0
+    if [ "${force}" = "force" ]; then
+      yellow "强制更新 Xray core"
+    else
+      green "Xray core 已安装，跳过下载"
+      migrate_legacy_xray_profile
+      return 0
+    fi
   fi
 
   asset="$(xray_asset_name)"
@@ -1260,9 +1277,10 @@ build_hy2_uri() {
     uri_host="[${host}]"
   fi
 
-  query="insecure=1&obfs=salamander&obfs-password=${encoded_obfs}&sni=${encoded_sni}"
   if [ -n "${pin_sha256}" ]; then
-    query="insecure=1&pinSHA256=${pin_sha256}&obfs=salamander&obfs-password=${encoded_obfs}&sni=${encoded_sni}"
+    query="pinSHA256=${pin_sha256}&obfs=salamander&obfs-password=${encoded_obfs}&sni=${encoded_sni}"
+  else
+    query="insecure=1&obfs=salamander&obfs-password=${encoded_obfs}&sni=${encoded_sni}"
   fi
 
   printf 'hysteria2://%s@%s:%s/?%s#HY2-%s\n' "${encoded_auth}" "${uri_host}" "${port}" "${query}" "${host}"
@@ -6398,7 +6416,7 @@ update_xray_core() {
   require_root
   require_linux
   install_base_packages
-  install_xray_binary
+  install_xray_binary force
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
     systemctl restart xray || true
   fi
@@ -6409,7 +6427,7 @@ update_hysteria_core() {
   require_root
   require_linux
   install_base_packages
-  install_hysteria_binary
+  install_hysteria_binary force
   if [ -f "${HY2_CONFIG_FILE}" ]; then
     systemctl restart hysteria-server || true
   fi
