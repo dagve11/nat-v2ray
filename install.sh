@@ -109,6 +109,11 @@ prompt_value() {
   fi
 }
 
+pause_return() {
+  echo
+  read_input _ '按回车返回面板...'
+}
+
 prompt_yes_no() {
   local message="$1"
   local default_value="$2"
@@ -6313,6 +6318,7 @@ view_config() {
     yellow "未找到 Xray 配置"
   fi
   hy2_info
+  pause_return
 }
 
 change_config() {
@@ -6520,7 +6526,17 @@ uninstall_nat_v2ray() {
 show_help() {
   cat <<EOF
 
-常用命令：
+快速开始：
+  首次使用：选 10) 依赖 检查并安装核心，再选 1) 添加配置 进入协议菜单。
+  面板顶部只显示已安装核心的版本和状态；显示 not configured 表示核心已安装但未添加节点，
+  未显示的核心表示尚未安装。
+
+面板菜单：
+  1) 添加配置    2) 更改配置    3) 查看配置    4) 删除配置
+  5) 运行管理    6) 更新        7) 卸载        8) 帮助
+  9) 其他       10) 依赖        0) 退出
+
+命令行速查：
   nv              打开总控台
   nv add          添加配置，进入协议菜单
   nv info [name]  查看 Xray profile 摘要
@@ -6530,7 +6546,7 @@ show_help() {
   nv status       查看当前配置和服务状态
   nv run          运行管理
   nv test         测试 Xray 配置
-  nv update       更新 nv 命令，等同 nv update script
+  nv update       更新 nv 脚本（面板 6) 更新 可选 core/hy2/geo）
   nv update core  更新 Xray core
   nv update hy2   更新 Hysteria2 core
   nv update geo   更新 geoip.dat / geosite.dat
@@ -6544,6 +6560,7 @@ show_help() {
   服务端配置监听本机端口，分享链接使用外网连接端口。
   NAT 面板必须按协议类型把外网 TCP、UDP 或端口范围转发到本机。
 EOF
+  pause_return
 }
 
 other_tools() {
@@ -6562,10 +6579,10 @@ EOF
     read_input choice '请选择 [0-4]: '
     choice="${choice:-0}"
     case "${choice}" in
-      1) txt_check_tool ;;
-      2) ss -lntup 2>/dev/null || true ;;
-      3) install_nv_command && green "nv 已安装：${NV_BIN}" ;;
-      4) xray_test_run ;;
+      1) txt_check_tool; pause_return ;;
+      2) ss -lntup 2>/dev/null || true; pause_return ;;
+      3) install_nv_command && green "nv 已安装：${NV_BIN}"; pause_return ;;
+      4) xray_test_run; pause_return ;;
       0) return 0 ;;
       *) yellow "无效选项" ;;
     esac
@@ -6724,12 +6741,13 @@ dependency_menu() {
     choice="${choice:-0}"
     case "${choice}" in
       0) return 0 ;;
-      a|A) require_root; install_missing_dependencies ;;
+      a|A) require_root; install_missing_dependencies; pause_return ;;
       *)
         if [[ "${choice}" =~ ^[0-9]+$ ]] && [ "${choice}" -ge 1 ] && [ "${choice}" -le "${#dependencies[@]}" ]; then
           require_root
           selected="${dependencies[$((choice - 1))]}"
           install_dependency_by_name "${selected}"
+          pause_return
         else
           yellow "无效选项"
         fi
@@ -6747,6 +6765,32 @@ nat-v2ray ${VERSION}
 
 面向 NAT VPS 的多协议一键脚本，支持 HY2、Reality、VLESS、VMess、Trojan、Shadowsocks。
 EOF
+}
+
+update_menu() {
+  local choice
+
+  while true; do
+    cat <<EOF
+
+更新：
+  1) 更新 nv 脚本
+  2) 更新 Xray core
+  3) 更新 Hysteria2 core
+  4) 更新 geoip.dat / geosite.dat
+  0) 返回
+EOF
+    read_input choice '请选择 [0-4]: '
+    choice="${choice:-0}"
+    case "${choice}" in
+      1) update_nv_command; pause_return ;;
+      2) update_xray_core; pause_return ;;
+      3) update_hysteria_core; pause_return ;;
+      4) update_geo_assets; pause_return ;;
+      0) return 0 ;;
+      *) yellow "无效选项" ;;
+    esac
+  done
 }
 
 running_from_nv_command() {
@@ -6773,7 +6817,7 @@ control_panel() {
       3) view_config ;;
       4) delete_config ;;
       5) runtime_management ;;
-      6) update_nv_command ;;
+      6) update_menu ;;
       7) uninstall_nat_v2ray; exit 0 ;;
       8) show_help ;;
       9) other_tools ;;
