@@ -6901,12 +6901,46 @@ xray_test_run() {
 }
 
 uninstall_nat_v2ray() {
+  local choice
+
   require_root
   require_linux
 
-  red "将卸载 nat-v2ray，并删除脚本安装的服务、二进制、配置、证书、日志和命令。"
-  prompt_required_yes '是否卸载 nat-v2ray? [y]:'
+  cat <<EOF
 
+卸载方式：
+  1) 保留配置，只卸脚本（节点照常使用，仅移除 nv 命令）
+  2) 完全卸载（删除二进制、配置、证书、服务、日志和 nv 命令）
+EOF
+  read_input choice '请选择 [1-2]: '
+  case "${choice}" in
+    1)
+      uninstall_script_only
+      ;;
+    2)
+      red "将卸载 nat-v2ray，并删除脚本安装的服务、二进制、配置、证书、日志和命令。"
+      prompt_required_yes '是否卸载 nat-v2ray? [y]:'
+      uninstall_full
+      ;;
+    *)
+      yellow "无效选项"
+      ;;
+  esac
+}
+
+uninstall_script_only() {
+  rm -f "${NV_BIN}"
+  rm -rf /usr/local/lib/nat-v2ray
+  rm -rf /tmp/nat-v2ray-* /tmp/Xray-linux-*.zip /tmp/hysteria-linux-*
+  if [ -f /root/.bashrc ]; then
+    sed -i '/nat-v2ray/d;/alias nv=/d;/\/usr\/local\/bin\/nv/d' /root/.bashrc || true
+  fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  green "已卸载 nv 脚本，保留 Xray/HY2 节点和配置"
+  echo "节点照常使用；重新运行 install.sh 可恢复 nv 管理"
+}
+
+uninstall_full() {
   systemctl disable --now xray >/dev/null 2>&1 || true
   systemctl disable --now hysteria-server >/dev/null 2>&1 || true
   systemctl reset-failed xray hysteria-server >/dev/null 2>&1 || true
