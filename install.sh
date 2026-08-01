@@ -6419,35 +6419,64 @@ view_config() {
 
 change_config() {
   local choice
-  local profile_name
+  local configs=()
+  local profile
+  local protocol
+  local public_port
+  local index
+  local selected
+  local kind
+  local name
+
+  require_root
+  require_linux
 
   while true; do
-    cat <<EOF
-
-更改配置（重新走该协议流程，回车保留原值；TLS 域名不变不重新申请证书，失败自动回滚）：
-  1) 编辑 Xray profile
-  2) 编辑 HY2
-  0) 返回
-EOF
-    read_input choice '请选择 [0-2]: '
+    configs=()
+    index=1
+    echo
+    echo "更改配置（回车保留原值；TLS 域名不变不重新申请证书，失败自动回滚）："
+    while IFS= read -r profile; do
+      [ -n "${profile:-}" ] || continue
+      protocol="$(xray_env_value PROTOCOL "${XRAY_PROFILE_DIR}/${profile}.env")"
+      public_port="$(xray_env_value XRAY_PUBLIC_PORT "${XRAY_PROFILE_DIR}/${profile}.env")"
+      [ -n "${public_port:-}" ] || public_port="$(xray_env_value XRAY_PUBLIC_PORT_RANGE "${XRAY_PROFILE_DIR}/${profile}.env")"
+      [ -n "${public_port:-}" ] || public_port="-"
+      printf '  %d) %s （%s %s）\n' "${index}" "${profile}" "${protocol}" "${public_port}"
+      configs+=("xray|${profile}")
+      index=$((index + 1))
+    done < <(xray_profile_names)
+    if [ -f "${HY2_ENV_FILE}" ]; then
+      public_port="$(xray_env_value HY2_PUBLIC_PORT "${HY2_ENV_FILE}")"
+      [ -n "${public_port:-}" ] || public_port="$(xray_env_value HY2_PORT "${HY2_ENV_FILE}")"
+      [ -n "${public_port:-}" ] || public_port="-"
+      printf '  %d) %s （%s %s）\n' "${index}" "HY2" "hy2-udp" "${public_port}"
+      configs+=("hy2|HY2")
+      index=$((index + 1))
+    fi
+    printf '  0) 返回\n'
+    if [ "${#configs[@]}" -eq 0 ]; then
+      yellow "没有配置，请先选 1) 添加配置"
+      pause_return
+      return 0
+    fi
+    read_input choice "请选择 [0-${#configs[@]}]: "
     choice="${choice:-0}"
-    case "${choice}" in
-      1)
-        if [ "$(xray_profile_count)" -eq 0 ]; then
-          yellow "没有 Xray profile，请先选 1) 添加配置"
-          pause_return
-          continue
-        fi
-        profile_name="$(select_xray_profile)"
-        [ -n "${profile_name:-}" ] || continue
-        edit_xray_profile "${profile_name}"
-        ;;
-      2)
-        edit_hy2
-        ;;
-      0) return 0 ;;
-      *) yellow "无效选项" ;;
-    esac
+    if [ "${choice}" = "0" ]; then
+      return 0
+    fi
+    if ! [[ "${choice}" =~ ^[0-9]+$ ]] || [ "${choice}" -lt 1 ] || [ "${choice}" -gt "${#configs[@]}" ]; then
+      yellow "无效选项"
+      continue
+    fi
+    selected="${configs[$((choice - 1))]}"
+    kind="${selected%%|*}"
+    name="${selected#*|}"
+    if [ "${kind}" = "xray" ]; then
+      edit_xray_profile "${name}"
+    else
+      edit_hy2
+    fi
   done
 }
 

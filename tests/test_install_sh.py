@@ -1003,10 +1003,14 @@ class EditConfigTests(unittest.TestCase):
         cc_start = script.index("change_config()")
         cc_end = script.index("\natomic_install()", cc_start)
         body = script[cc_start:cc_end]
-        self.assertIn("编辑 Xray profile", body)
-        self.assertIn("编辑 HY2", body)
-        self.assertIn('edit_xray_profile "${profile_name}"', body)
+        self.assertIn("更改配置", body)
+        self.assertIn('configs+=("xray|${profile}")', body)
+        self.assertIn('configs+=("hy2|HY2")', body)
+        self.assertIn('xray_profile_names', body)
+        self.assertIn('HY2_ENV_FILE', body)
+        self.assertIn('edit_xray_profile "${name}"', body)
         self.assertIn("edit_hy2", body)
+        self.assertIn("0) 返回", body)
 
     def test_atomic_install_is_atomic_tmp_mv(self) -> None:
         script = read_install_script()
