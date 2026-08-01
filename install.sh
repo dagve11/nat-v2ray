@@ -6694,32 +6694,59 @@ edit_hy2() {
 
 delete_config() {
   local choice
+  local configs=()
+  local profile
+  local protocol
+  local public_port
+  local index
+  local selected
+  local kind
+  local name
+  local all_index
 
   require_root
   require_linux
 
-  cat <<EOF
-
-删除配置：
-  1) 删除一个 Xray profile
-  2) 删除 HY2 配置
-  3) 删除全部配置
-  0) 返回
-EOF
-  read_input choice '请选择 [0-3]: '
-  choice="${choice:-0}"
-  case "${choice}" in
-    1) delete_xray_profile ;;
-    2)
-      systemctl disable --now hysteria-server >/dev/null 2>&1 || true
-      rm -f "${HY2_CONFIG_FILE}" "${HY2_ENV_FILE}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}" "${HY2_SERVICE_FILE}"
-      systemctl daemon-reload >/dev/null 2>&1 || true
-      green "HY2 配置已删除"
-      ;;
-    3)
+  while true; do
+    configs=()
+    index=1
+    echo
+    echo "删除配置："
+    while IFS= read -r profile; do
+      [ -n "${profile:-}" ] || continue
+      protocol="$(xray_env_value PROTOCOL "${XRAY_PROFILE_DIR}/${profile}.env")"
+      public_port="$(xray_env_value XRAY_PUBLIC_PORT "${XRAY_PROFILE_DIR}/${profile}.env")"
+      [ -n "${public_port:-}" ] || public_port="$(xray_env_value XRAY_PUBLIC_PORT_RANGE "${XRAY_PROFILE_DIR}/${profile}.env")"
+      [ -n "${public_port:-}" ] || public_port="-"
+      printf '  %d) %s （%s %s）\n' "${index}" "${profile}" "${protocol}" "${public_port}"
+      configs+=("xray|${profile}")
+      index=$((index + 1))
+    done < <(xray_profile_names)
+    if [ -f "${HY2_ENV_FILE}" ]; then
+      public_port="$(xray_env_value HY2_PUBLIC_PORT "${HY2_ENV_FILE}")"
+      [ -n "${public_port:-}" ] || public_port="$(xray_env_value HY2_PORT "${HY2_ENV_FILE}")"
+      [ -n "${public_port:-}" ] || public_port="-"
+      printf '  %d) %s （%s %s）\n' "${index}" "HY2" "hy2-udp" "${public_port}"
+      configs+=("hy2|HY2")
+      index=$((index + 1))
+    fi
+    all_index="${index}"
+    if [ "${#configs[@]}" -eq 0 ]; then
+      yellow "没有配置，请先选 1) 添加配置"
+      pause_return
+      return 0
+    fi
+    printf '  %d) 删除全部配置\n' "${all_index}"
+    printf '  0) 返回\n'
+    read_input choice "请选择 [0-${all_index}]: "
+    choice="${choice:-0}"
+    if [ "${choice}" = "0" ]; then
+      return 0
+    fi
+    if [ "${choice}" = "${all_index}" ]; then
       if ! prompt_yes_no '确认删除全部配置' 'n'; then
         yellow "已取消"
-        return 0
+        continue
       fi
       systemctl disable --now xray >/dev/null 2>&1 || true
       systemctl disable --now hysteria-server >/dev/null 2>&1 || true
@@ -6728,10 +6755,29 @@ EOF
       rm -f "${HY2_CONFIG_FILE}" "${HY2_ENV_FILE}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}" "${HY2_SERVICE_FILE}"
       systemctl daemon-reload >/dev/null 2>&1 || true
       green "全部配置已删除"
-      ;;
-    0) return 0 ;;
-    *) yellow "无效选项" ;;
-  esac
+      pause_return
+      return 0
+    fi
+    if ! [[ "${choice}" =~ ^[0-9]+$ ]] || [ "${choice}" -lt 1 ] || [ "${choice}" -gt "${#configs[@]}" ]; then
+      yellow "无效选项"
+      continue
+    fi
+    selected="${configs[$((choice - 1))]}"
+    kind="${selected%%|*}"
+    name="${selected#*|}"
+    if [ "${kind}" = "xray" ]; then
+      delete_xray_profile "${name}"
+    else
+      if ! prompt_yes_no '确认删除 HY2 配置' 'n'; then
+        continue
+      fi
+      systemctl disable --now hysteria-server >/dev/null 2>&1 || true
+      rm -f "${HY2_CONFIG_FILE}" "${HY2_ENV_FILE}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}" "${HY2_SERVICE_FILE}"
+      systemctl daemon-reload >/dev/null 2>&1 || true
+      green "HY2 配置已删除"
+    fi
+    pause_return
+  done
 }
 
 runtime_management() {
