@@ -299,9 +299,11 @@ prompt_nat_port_pair() {
   local default_port="$2"
   local listen_port
   local public_port
+  local listen_default
 
-  listen_port="$(prompt_port "${message}（本机监听端口）" "${default_port}")"
-  public_port="$(prompt_port '请输入外网连接端口（生成分享链接使用，留空默认同本机监听端口）' "${listen_port}")"
+  listen_default="$(edit_target_default LISTEN_PORT "${default_port}")"
+  listen_port="$(prompt_port "${message}（本机监听端口）" "${listen_default}")"
+  public_port="$(prompt_port '请输入外网连接端口（生成分享链接使用，留空默认同本机监听端口）' "$(edit_target_default PUBLIC_PORT "${listen_port}")")"
   printf '%s %s\n' "${listen_port}" "${public_port}"
 }
 
@@ -310,10 +312,12 @@ prompt_nat_port_range_pair() {
   local default_range="$2"
   local listen_range
   local public_range
+  local listen_default
 
-  listen_range="$(prompt_port_range "${message}（本机监听端口范围）" "${default_range}")"
+  listen_default="$(edit_target_default LISTEN_PORT_RANGE "${default_range}")"
+  listen_range="$(prompt_port_range "${message}（本机监听端口范围）" "${listen_default}")"
   while true; do
-    public_range="$(prompt_port_range '请输入外网连接端口范围（生成分享链接使用，留空默认同本机监听端口范围）' "${listen_range}")"
+    public_range="$(prompt_port_range '请输入外网连接端口范围（生成分享链接使用，留空默认同本机监听端口范围）' "$(edit_target_default PUBLIC_PORT_RANGE "${listen_range}")")"
     if [ "$(port_range_span "${listen_range}")" = "$(port_range_span "${public_range}")" ]; then
       printf '%s %s\n' "${listen_range}" "${public_range}"
       return 0
@@ -344,7 +348,7 @@ prompt_kcp_header_type() {
   local default_type="$2"
   local header_type
   while true; do
-    header_type="$(prompt_value "${message}" "${default_type}")"
+    header_type="$(prompt_value "${message}" "$(edit_default KCP_HEADER_TYPE "${default_type}")")"
     header_type="$(printf '%s' "${header_type}" | tr '[:upper:]' '[:lower:]')"
     if validate_kcp_header_type "${header_type}"; then
       printf '%s\n' "${header_type}"
@@ -717,6 +721,53 @@ xray_env_value() {
   ' "${env_file}"
 }
 
+edit_env_has_key() {
+  local key="$1"
+
+  [ -n "${NV_EDIT_ENV_FILE:-}" ] || return 1
+  [ -f "${NV_EDIT_ENV_FILE:-}" ] || return 1
+  grep -q "^${key}=" "${NV_EDIT_ENV_FILE:-}"
+}
+
+edit_env_value() {
+  local key="$1"
+
+  if [ -n "${NV_EDIT_ENV_FILE:-}" ] && [ -f "${NV_EDIT_ENV_FILE:-}" ]; then
+    xray_env_value "${key}" "${NV_EDIT_ENV_FILE:-}"
+  fi
+}
+
+edit_default() {
+  local key="$1"
+  local fallback="$2"
+
+  if [ -z "${NV_EDIT_ENV_FILE:-}" ]; then
+    printf '%s\n' "${fallback}"
+    return 0
+  fi
+  if edit_env_has_key "${key}"; then
+    edit_env_value "${key}"
+    return 0
+  fi
+  die "编辑模式缺少字段：${key}，请先用 1) 添加配置 创建该节点"
+}
+
+edit_target_default() {
+  local suffix="$1"
+  local fallback="$2"
+  local key
+
+  case "${NV_EDIT_KIND:-}" in
+    xray) key="XRAY_${suffix}" ;;
+    hy2)  key="HY2_${suffix}" ;;
+    *)
+      printf '%s\n' "${fallback}"
+      return 0
+      ;;
+  esac
+  edit_default "${key}" "${fallback}"
+}
+
 sanitize_profile_name() {
   tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//'
 }
@@ -813,7 +864,7 @@ register_xray_profile() {
   [ -f "${XRAY_CONFIG_FILE}" ] || die "缺少 Xray 配置，无法注册 profile"
   [ -f "${XRAY_ENV_FILE}" ] || die "缺少 Xray 环境文件，无法注册 profile"
 
-  profile_name="$(xray_profile_name)"
+  profile_name="${NV_EDIT_PROFILE:-$(xray_profile_name)}"
   profile_config="${XRAY_PROFILE_DIR}/${profile_name}.json"
   profile_env="${XRAY_PROFILE_DIR}/${profile_name}.env"
   temp_config="${profile_config}.tmp.$$"
@@ -1160,8 +1211,18 @@ ensure_port_available() {
   local -n port_ref="$1"
   local choice
   local service_name
+  local orig_listen
 
   while port_is_used "${port_ref}"; do
+    if [ "${NV_EDIT_STAGE:-0}" = "1" ]; then
+      if [ "${NV_EDIT_WAS_ACTIVE:-0}" = "1" ]; then
+        orig_listen="$(edit_target_default LISTEN_PORT '')"
+        if [ -n "${orig_listen:-}" ] && [ "${port_ref}" = "${orig_listen:-}" ]; then
+          break
+        fi
+      fi
+      die "端口 ${port_ref} 被占用，编辑模式不会停用其他服务；请改用其他端口或先在 NAT 面板确认"
+    fi
     show_port_usage "${port_ref}"
     cat <<EOF
 
@@ -1250,6 +1311,15 @@ create_self_signed_cert() {
   local san
   san="$(subject_alt_name_for_host "${host}")"
 
+  # 编辑态：host 未变且已有有效证书则复用，不重签（保持 pinSHA256）
+  if [ "${NV_EDIT_STAGE:-0}" = "1" ] && [ -s "${HY2_CERT_FILE:-}" ] && [ -s "${HY2_KEY_FILE:-}" ]; then
+    local existing_cn
+    existing_cn="$(openssl x509 -noout -subject -in "${HY2_CERT_FILE}" 2>/dev/null | sed -E 's/.*CN[[:space:]]*=[[:space:]]*([^,/]+).*/\1/' | tr -d ' ')"
+    if [ -n "${existing_cn:-}" ] && [ "${existing_cn}" = "${host}" ]; then
+      return 0
+    fi
+  fi
+
   openssl req -x509 -newkey rsa:2048 -nodes \
     -keyout "${HY2_KEY_FILE}" \
     -out "${HY2_CERT_FILE}" \
@@ -1308,7 +1378,7 @@ hy2_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   if [ -z "${port}" ] || [ -z "${public_port}" ]; then
     read -r port public_port < <(prompt_nat_port_pair '请输入 HY2 UDP 端口，必须在 NAT 面板转发 UDP' '63272')
   elif ! validate_port "${port}" || ! validate_port "${public_port}"; then
@@ -1316,9 +1386,9 @@ hy2_install() {
   fi
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  masquerade_url="$(prompt_value '请输入伪装站点 URL' 'https://www.bing.com/')"
-  auth_password="$(prompt_value '请输入 HY2 认证密码，留空使用随机值' "$(random_hex 16)")"
-  obfs_password="$(prompt_value '请输入 salamander 混淆密码，留空使用随机值' "$(random_hex 16)")"
+  masquerade_url="$(prompt_value '请输入伪装站点 URL' "$(edit_default HY2_MASQUERADE 'https://www.bing.com/')")"
+  auth_password="$(prompt_value '请输入 HY2 认证密码，留空使用随机值' "$(edit_default HY2_AUTH "$(random_hex 16)")")"
+  obfs_password="$(prompt_value '请输入 salamander 混淆密码，留空使用随机值' "$(edit_default HY2_OBFS "$(random_hex 16)")")"
 
   yellow "请按上面的 NAT 映射转发 UDP。HY2 不走 TCP，只有 TCP 转发会连不上。"
   if ! prompt_yes_no '确认继续安装 HY2' 'y'; then
@@ -1393,14 +1463,14 @@ reality_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 Reality TCP 端口，必须在 NAT 面板转发 TCP' '443')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  server_name="$(prompt_value '请输入 Reality 伪装 SNI' 'www.cloudflare.com')"
-  dest="$(prompt_value '请输入 Reality 伪装目标 host:port' "${server_name}:443")"
-  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
-  short_id="$(prompt_value '请输入 Reality shortId，留空使用随机值' "$(random_hex 4)")"
+  server_name="$(prompt_value '请输入 Reality 伪装 SNI' "$(edit_default REALITY_SNI 'www.cloudflare.com')")"
+  dest="$(prompt_value '请输入 Reality 伪装目标 host:port' "$(edit_default REALITY_DEST "${server_name}:443")")"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  short_id="$(prompt_value '请输入 Reality shortId，留空使用随机值' "$(edit_default REALITY_SHORT_ID "$(random_hex 4)")")"
 
   yellow "请按上面的 NAT 映射转发 TCP。Reality 不需要申请 TLS 证书。"
   if ! prompt_yes_no '确认继续安装 Reality' 'y'; then
@@ -1408,9 +1478,16 @@ reality_install() {
   fi
 
   install_xray_binary
-  keys="$(generate_reality_keys)"
-  private_key="${keys%% *}"
-  public_key="${keys##* }"
+  if [ -n "${NV_EDIT_PROFILE:-}" ] && edit_env_has_key REALITY_PRIVATE_KEY && edit_env_has_key REALITY_PUBLIC_KEY; then
+    private_key="$(edit_env_value REALITY_PRIVATE_KEY)"
+    public_key="$(edit_env_value REALITY_PUBLIC_KEY)"
+  elif [ -n "${NV_EDIT_PROFILE:-}" ]; then
+    die "Reality 编辑缺少密钥字段，请用 1) 添加配置 重建该节点"
+  else
+    keys="$(generate_reality_keys)"
+    private_key="${keys%% *}"
+    public_key="${keys##* }"
+  fi
 
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
@@ -1602,6 +1679,19 @@ request_tls_cert_manual_dns() {
 
   require_root
   install_base_packages
+
+  if [ "${NV_EDIT_STAGE:-0}" = "1" ]; then
+    local rc_dir rc_key rc_chain
+    rc_dir="$(cert_dir_for_domain "${domain}")"
+    rc_key="${rc_dir}/private.key"
+    rc_chain="${rc_dir}/fullchain.cer"
+    if [ -s "${rc_key:-}" ] && [ -s "${rc_chain:-}" ] \
+      && openssl x509 -checkend 0 -noout -in "${rc_chain}" >/dev/null 2>&1; then
+      printf '%s %s\n' "${rc_chain}" "${rc_key}"
+      return 0
+    fi
+  fi
+
   install_acme_sh
   ensure_letsencrypt_account "${domain}"
 
@@ -1650,7 +1740,7 @@ request_tls_cert_manual_dns() {
   "${ACME_SH}" --install-cert -d "${domain}" \
     --key-file "${key_file}" \
     --fullchain-file "${fullchain_file}" \
-    --reloadcmd "systemctl restart xray >/dev/null 2>&1 || true"
+    --reloadcmd "${NV_EDIT_RELOADCMD:-systemctl restart xray >/dev/null 2>&1 || true}"
 
   chmod 600 "${key_file}"
   chmod 644 "${fullchain_file}"
@@ -3615,11 +3705,11 @@ vless_tcp_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VLESS TCP 端口，必须在 NAT 面板转发 TCP' '10090')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
 
   yellow "VLESS TCP 不带 TLS，适合临时测试；公网长期使用建议优先 Reality/HY2/TLS。"
   if ! prompt_yes_no '确认继续安装 VLESS TCP' 'y'; then
@@ -3678,13 +3768,13 @@ vless_ws_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VLESS WS TCP 端口，必须在 NAT 面板转发 TCP' '10091')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
-  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
-  host_header="$(prompt_value '请输入 WebSocket Host 伪装域名，留空使用连接地址' "${server_host}")"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "$(edit_default WS_PATH "/$(random_hex 8)")")")"
+  host_header="$(prompt_value '请输入 WebSocket Host 伪装域名，留空使用连接地址' "$(edit_default WS_HOST "${server_host}")")"
 
   yellow "VLESS WS 当前不带 TLS；如需 TLS 请用 VLESS WS TLS。"
   if ! prompt_yes_no '确认继续安装 VLESS WS' 'y'; then
@@ -3745,13 +3835,13 @@ vless_httpupgrade_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VLESS HTTPUpgrade TCP 端口，必须在 NAT 面板转发 TCP' '10093')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
-  http_path="$(normalize_ws_path "$(prompt_value '请输入 HTTPUpgrade 路径' "/$(random_hex 8)")")"
-  host_header="$(prompt_value '请输入 HTTPUpgrade Host 伪装域名，留空使用连接地址' "${server_host}")"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  http_path="$(normalize_ws_path "$(prompt_value '请输入 HTTPUpgrade 路径' "$(edit_default HTTP_PATH "/$(random_hex 8)")")")"
+  host_header="$(prompt_value '请输入 HTTPUpgrade Host 伪装域名，留空使用连接地址' "$(edit_default HTTP_HOST "${server_host}")")"
 
   yellow "VLESS HTTPUpgrade 当前不带 TLS；如需证书保护，后续使用 TLS 类协议。"
   if ! prompt_yes_no '确认继续安装 VLESS HTTPUpgrade' 'y'; then
@@ -3811,12 +3901,12 @@ vless_grpc_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VLESS gRPC TCP 端口，必须在 NAT 面板转发 TCP' '10095')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
-  service_name="$(prompt_value '请输入 gRPC serviceName' "$(random_hex 8)")"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  service_name="$(prompt_value '请输入 gRPC serviceName' "$(edit_default GRPC_SERVICE_NAME "$(random_hex 8)")")"
 
   yellow "VLESS gRPC 当前不带 TLS；如需证书保护，请使用 VLESS gRPC TLS。"
   if ! prompt_yes_no '确认继续安装 VLESS gRPC' 'y'; then
@@ -3876,13 +3966,13 @@ vless_xhttp_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VLESS XHTTP TCP 端口，必须在 NAT 面板转发 TCP' '10097')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
-  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "/$(random_hex 8)")")"
-  xhttp_mode="$(prompt_value '请输入 XHTTP mode' 'auto')"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "$(edit_default XHTTP_PATH "/$(random_hex 8)")")")"
+  xhttp_mode="$(prompt_value '请输入 XHTTP mode' "$(edit_default XHTTP_MODE 'auto')")"
 
   yellow "VLESS XHTTP 当前不带 TLS；如需证书保护，后续可增加 XHTTP TLS。"
   if ! prompt_yes_no '确认继续安装 VLESS XHTTP' 'y'; then
@@ -3947,14 +4037,14 @@ vless_xhttp_tls_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
-  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "$(edit_default TLS_DOMAIN "${server_host}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VLESS XHTTP TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
-  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "/$(random_hex 8)")")"
-  xhttp_mode="$(prompt_value '请输入 XHTTP mode' 'auto')"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "$(edit_default XHTTP_PATH "/$(random_hex 8)")")")"
+  xhttp_mode="$(prompt_value '请输入 XHTTP mode' "$(edit_default XHTTP_MODE 'auto')")"
 
   yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
   if ! prompt_yes_no '确认继续安装 VLESS XHTTP TLS' 'y'; then
@@ -4021,10 +4111,10 @@ vless_tcp_dynamic_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port_range public_port_range < <(prompt_nat_port_range_pair '请输入 VLESS TCP dynamic port 端口范围，必须在 NAT 面板转发整个 TCP 端口范围' '20400-20410')
   show_nat_port_mapping "${port_range}" "${public_port_range}" '端口范围'
-  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
 
   yellow "VLESS TCP dynamic port 会在本机 TCP 端口范围 ${port_range} 中随机监听，分享链接使用外网范围 ${public_port_range}。NAT 面板必须转发整个 TCP 端口范围。"
   if ! prompt_yes_no '确认继续安装 VLESS TCP dynamic port' 'y'; then
@@ -4082,12 +4172,12 @@ vless_ws_dynamic_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port_range public_port_range < <(prompt_nat_port_range_pair '请输入 VLESS WS dynamic port 端口范围，必须在 NAT 面板转发整个 TCP 端口范围' '20500-20510')
   show_nat_port_mapping "${port_range}" "${public_port_range}" '端口范围'
-  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
-  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
-  host_header="$(prompt_value '请输入 WebSocket Host 伪装域名，留空使用连接地址' "${server_host}")"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "$(edit_default WS_PATH "/$(random_hex 8)")")")"
+  host_header="$(prompt_value '请输入 WebSocket Host 伪装域名，留空使用连接地址' "$(edit_default WS_HOST "${server_host}")")"
 
   yellow "VLESS WS dynamic port 会在本机 TCP 端口范围 ${port_range} 中随机监听，分享链接使用外网范围 ${public_port_range}。NAT 面板必须转发整个 TCP 端口范围。"
   if ! prompt_yes_no '确认继续安装 VLESS WS dynamic port' 'y'; then
@@ -4147,13 +4237,13 @@ vless_mkcp_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VLESS mKCP UDP 端口，必须在 NAT 面板转发 UDP' '10092')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
   header_type="$(prompt_kcp_header_type '请输入 mKCP header type' 'none')"
-  seed="$(prompt_value '请输入 mKCP seed，留空使用随机值' "$(random_hex 8)")"
+  seed="$(prompt_value '请输入 mKCP seed，留空使用随机值' "$(edit_default KCP_SEED "$(random_hex 8)")")"
 
   yellow "VLESS mKCP 走 UDP。请按上面的 NAT 映射转发 UDP，不是 TCP。"
   if ! prompt_yes_no '确认继续安装 VLESS mKCP' 'y'; then
@@ -4216,12 +4306,12 @@ vless_mkcp_dynamic_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port_range public_port_range < <(prompt_nat_port_range_pair '请输入 VLESS mKCP UDP 端口范围，必须在 NAT 面板转发整个 UDP 端口范围' '20100-20110')
   show_nat_port_mapping "${port_range}" "${public_port_range}" '端口范围'
-  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
   header_type="$(prompt_kcp_header_type '请输入 mKCP header type' 'none')"
-  seed="$(prompt_value '请输入 mKCP seed，留空使用随机值' "$(random_hex 8)")"
+  seed="$(prompt_value '请输入 mKCP seed，留空使用随机值' "$(edit_default KCP_SEED "$(random_hex 8)")")"
 
   yellow "VLESS mKCP dynamic port 会在本机 UDP 端口范围 ${port_range} 中随机监听，分享链接使用外网范围 ${public_port_range}。NAT 面板必须转发整个 UDP 端口范围。"
   if ! prompt_yes_no '确认继续安装 VLESS mKCP dynamic port' 'y'; then
@@ -4283,12 +4373,12 @@ vless_tcp_tls_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
-  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "$(edit_default TLS_DOMAIN "${server_host}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VLESS TCP TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
 
   yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
   if ! prompt_yes_no '确认继续安装 VLESS TCP TLS' 'y'; then
@@ -4355,13 +4445,13 @@ vless_ws_tls_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   domain="$(prompt_value '请输入用于 TLS 证书的域名' "${server_host}")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VLESS WS TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
-  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "$(edit_default WS_PATH "/$(random_hex 8)")")")"
 
   yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
   if ! prompt_yes_no '确认继续安装 VLESS WS TLS' 'y'; then
@@ -4428,12 +4518,12 @@ trojan_tls_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   domain="$(prompt_value '请输入用于 TLS 证书的域名' "${server_host}")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 Trojan TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(edit_default TROJAN_PASSWORD "$(random_hex 16)")")"
 
   yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
   if ! prompt_yes_no '确认继续安装 Trojan TLS' 'y'; then
@@ -4495,11 +4585,11 @@ vmess_tcp_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VMess TCP 端口，必须在 NAT 面板转发 TCP' '10086')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
 
   yellow "VMess TCP 不带 TLS，适合临时或内测使用；公网长期使用建议优先 Reality/HY2/TLS。"
   if ! prompt_yes_no '确认继续安装 VMess TCP' 'y'; then
@@ -4555,13 +4645,13 @@ vmess_ws_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VMess WS TCP 端口，必须在 NAT 面板转发 TCP' '10087')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
-  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
-  host_header="$(prompt_value '请输入 WebSocket Host 伪装域名，留空使用连接地址' "${server_host}")"
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "$(edit_default WS_PATH "/$(random_hex 8)")")")"
+  host_header="$(prompt_value '请输入 WebSocket Host 伪装域名，留空使用连接地址' "$(edit_default WS_HOST "${server_host}")")"
 
   yellow "VMess WS 当前不带 TLS；如需 TLS 请用 VLESS WS TLS。"
   if ! prompt_yes_no '确认继续安装 VMess WS' 'y'; then
@@ -4619,13 +4709,13 @@ vmess_httpupgrade_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VMess HTTPUpgrade TCP 端口，必须在 NAT 面板转发 TCP' '10094')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
-  http_path="$(normalize_ws_path "$(prompt_value '请输入 HTTPUpgrade 路径' "/$(random_hex 8)")")"
-  host_header="$(prompt_value '请输入 HTTPUpgrade Host 伪装域名，留空使用连接地址' "${server_host}")"
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  http_path="$(normalize_ws_path "$(prompt_value '请输入 HTTPUpgrade 路径' "$(edit_default HTTP_PATH "/$(random_hex 8)")")")"
+  host_header="$(prompt_value '请输入 HTTPUpgrade Host 伪装域名，留空使用连接地址' "$(edit_default HTTP_HOST "${server_host}")")"
 
   yellow "VMess HTTPUpgrade 当前不带 TLS；公网长期使用建议优先 VLESS/Reality/HY2/TLS。"
   if ! prompt_yes_no '确认继续安装 VMess HTTPUpgrade' 'y'; then
@@ -4685,12 +4775,12 @@ vmess_grpc_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VMess gRPC TCP 端口，必须在 NAT 面板转发 TCP' '10096')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
-  service_name="$(prompt_value '请输入 gRPC serviceName' "$(random_hex 8)")"
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  service_name="$(prompt_value '请输入 gRPC serviceName' "$(edit_default GRPC_SERVICE_NAME "$(random_hex 8)")")"
 
   yellow "VMess gRPC 当前不带 TLS；如需证书保护，请使用 VMess gRPC TLS。"
   if ! prompt_yes_no '确认继续安装 VMess gRPC' 'y'; then
@@ -4750,13 +4840,13 @@ vmess_xhttp_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VMess XHTTP TCP 端口，必须在 NAT 面板转发 TCP' '10098')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
-  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "/$(random_hex 8)")")"
-  xhttp_mode="$(prompt_value '请输入 XHTTP mode' 'auto')"
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "$(edit_default XHTTP_PATH "/$(random_hex 8)")")")"
+  xhttp_mode="$(prompt_value '请输入 XHTTP mode' "$(edit_default XHTTP_MODE 'auto')")"
 
   yellow "VMess XHTTP 当前不带 TLS；公网长期使用建议优先 VLESS/Reality/HY2/TLS。"
   if ! prompt_yes_no '确认继续安装 VMess XHTTP' 'y'; then
@@ -4821,14 +4911,14 @@ vmess_xhttp_tls_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
-  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "$(edit_default TLS_DOMAIN "${server_host}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VMess XHTTP TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
-  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "/$(random_hex 8)")")"
-  xhttp_mode="$(prompt_value '请输入 XHTTP mode' 'auto')"
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "$(edit_default XHTTP_PATH "/$(random_hex 8)")")")"
+  xhttp_mode="$(prompt_value '请输入 XHTTP mode' "$(edit_default XHTTP_MODE 'auto')")"
 
   yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
   if ! prompt_yes_no '确认继续安装 VMess XHTTP TLS' 'y'; then
@@ -4895,10 +4985,10 @@ vmess_tcp_dynamic_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port_range public_port_range < <(prompt_nat_port_range_pair '请输入 VMess TCP dynamic port 端口范围，必须在 NAT 面板转发整个 TCP 端口范围' '20200-20210')
   show_nat_port_mapping "${port_range}" "${public_port_range}" '端口范围'
-  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
 
   yellow "VMess TCP dynamic port 会在本机 TCP 端口范围 ${port_range} 中随机监听，分享链接使用外网范围 ${public_port_range}。NAT 面板必须转发整个 TCP 端口范围。"
   if ! prompt_yes_no '确认继续安装 VMess TCP dynamic port' 'y'; then
@@ -4956,12 +5046,12 @@ vmess_ws_dynamic_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port_range public_port_range < <(prompt_nat_port_range_pair '请输入 VMess WS dynamic port 端口范围，必须在 NAT 面板转发整个 TCP 端口范围' '20300-20310')
   show_nat_port_mapping "${port_range}" "${public_port_range}" '端口范围'
-  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
-  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
-  host_header="$(prompt_value '请输入 WebSocket Host 伪装域名，留空使用连接地址' "${server_host}")"
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "$(edit_default WS_PATH "/$(random_hex 8)")")")"
+  host_header="$(prompt_value '请输入 WebSocket Host 伪装域名，留空使用连接地址' "$(edit_default WS_HOST "${server_host}")")"
 
   yellow "VMess WS dynamic port 会在本机 TCP 端口范围 ${port_range} 中随机监听，分享链接使用外网范围 ${public_port_range}。NAT 面板必须转发整个 TCP 端口范围。"
   if ! prompt_yes_no '确认继续安装 VMess WS dynamic port' 'y'; then
@@ -5021,13 +5111,13 @@ vmess_mkcp_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VMess mKCP UDP 端口，必须在 NAT 面板转发 UDP' '10089')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
   header_type="$(prompt_kcp_header_type '请输入 mKCP header type' 'none')"
-  seed="$(prompt_value '请输入 mKCP seed，留空使用随机值' "$(random_hex 8)")"
+  seed="$(prompt_value '请输入 mKCP seed，留空使用随机值' "$(edit_default KCP_SEED "$(random_hex 8)")")"
 
   yellow "VMess mKCP 走 UDP。请按上面的 NAT 映射转发 UDP，不是 TCP。"
   if ! prompt_yes_no '确认继续安装 VMess mKCP' 'y'; then
@@ -5090,12 +5180,12 @@ vmess_mkcp_dynamic_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port_range public_port_range < <(prompt_nat_port_range_pair '请输入 VMess mKCP UDP 端口范围，必须在 NAT 面板转发整个 UDP 端口范围' '20000-20010')
   show_nat_port_mapping "${port_range}" "${public_port_range}" '端口范围'
-  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
   header_type="$(prompt_kcp_header_type '请输入 mKCP header type' 'none')"
-  seed="$(prompt_value '请输入 mKCP seed，留空使用随机值' "$(random_hex 8)")"
+  seed="$(prompt_value '请输入 mKCP seed，留空使用随机值' "$(edit_default KCP_SEED "$(random_hex 8)")")"
 
   yellow "VMess mKCP dynamic port 会在本机 UDP 端口范围 ${port_range} 中随机监听，分享链接使用外网范围 ${public_port_range}。NAT 面板必须转发整个 UDP 端口范围。"
   if ! prompt_yes_no '确认继续安装 VMess mKCP dynamic port' 'y'; then
@@ -5153,11 +5243,11 @@ trojan_tcp_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 Trojan TCP 端口，必须在 NAT 面板转发 TCP' '10100')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(edit_default TROJAN_PASSWORD "$(random_hex 16)")")"
 
   yellow "Trojan TCP 当前不带 TLS；公网长期使用建议优先 Trojan TLS、Reality 或 HY2。"
   if ! prompt_yes_no '确认继续安装 Trojan TCP' 'y'; then
@@ -5216,13 +5306,13 @@ trojan_ws_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 Trojan WS TCP 端口，必须在 NAT 面板转发 TCP' '10101')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
-  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
-  host_header="$(prompt_value '请输入 WebSocket Host 伪装域名，留空使用连接地址' "${server_host}")"
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(edit_default TROJAN_PASSWORD "$(random_hex 16)")")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "$(edit_default WS_PATH "/$(random_hex 8)")")")"
+  host_header="$(prompt_value '请输入 WebSocket Host 伪装域名，留空使用连接地址' "$(edit_default WS_HOST "${server_host}")")"
 
   yellow "Trojan WS 当前不带 TLS；如需证书保护，请使用 Trojan WS TLS。"
   if ! prompt_yes_no '确认继续安装 Trojan WS' 'y'; then
@@ -5283,13 +5373,13 @@ trojan_httpupgrade_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 Trojan HTTPUpgrade TCP 端口，必须在 NAT 面板转发 TCP' '10102')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
-  http_path="$(normalize_ws_path "$(prompt_value '请输入 HTTPUpgrade 路径' "/$(random_hex 8)")")"
-  host_header="$(prompt_value '请输入 HTTPUpgrade Host 伪装域名，留空使用连接地址' "${server_host}")"
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(edit_default TROJAN_PASSWORD "$(random_hex 16)")")"
+  http_path="$(normalize_ws_path "$(prompt_value '请输入 HTTPUpgrade 路径' "$(edit_default HTTP_PATH "/$(random_hex 8)")")")"
+  host_header="$(prompt_value '请输入 HTTPUpgrade Host 伪装域名，留空使用连接地址' "$(edit_default HTTP_HOST "${server_host}")")"
 
   yellow "Trojan HTTPUpgrade 当前不带 TLS；如需证书保护，后续使用 TLS 类协议。"
   if ! prompt_yes_no '确认继续安装 Trojan HTTPUpgrade' 'y'; then
@@ -5349,12 +5439,12 @@ trojan_grpc_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 Trojan gRPC TCP 端口，必须在 NAT 面板转发 TCP' '10103')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
-  service_name="$(prompt_value '请输入 gRPC serviceName' "$(random_hex 8)")"
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(edit_default TROJAN_PASSWORD "$(random_hex 16)")")"
+  service_name="$(prompt_value '请输入 gRPC serviceName' "$(edit_default GRPC_SERVICE_NAME "$(random_hex 8)")")"
 
   yellow "Trojan gRPC 当前不带 TLS；如需证书保护，请使用 Trojan gRPC TLS。"
   if ! prompt_yes_no '确认继续安装 Trojan gRPC' 'y'; then
@@ -5414,13 +5504,13 @@ trojan_xhttp_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 Trojan XHTTP TCP 端口，必须在 NAT 面板转发 TCP' '10104')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
-  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "/$(random_hex 8)")")"
-  xhttp_mode="$(prompt_value '请输入 XHTTP mode' 'auto')"
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(edit_default TROJAN_PASSWORD "$(random_hex 16)")")"
+  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "$(edit_default XHTTP_PATH "/$(random_hex 8)")")")"
+  xhttp_mode="$(prompt_value '请输入 XHTTP mode' "$(edit_default XHTTP_MODE 'auto')")"
 
   yellow "Trojan XHTTP 当前不带 TLS；如需证书保护，后续可增加 XHTTP TLS。"
   if ! prompt_yes_no '确认继续安装 Trojan XHTTP' 'y'; then
@@ -5485,14 +5575,14 @@ trojan_xhttp_tls_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
-  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "$(edit_default TLS_DOMAIN "${server_host}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 Trojan XHTTP TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
-  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "/$(random_hex 8)")")"
-  xhttp_mode="$(prompt_value '请输入 XHTTP mode' 'auto')"
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(edit_default TROJAN_PASSWORD "$(random_hex 16)")")"
+  xhttp_path="$(normalize_ws_path "$(prompt_value '请输入 XHTTP 路径' "$(edit_default XHTTP_PATH "/$(random_hex 8)")")")"
+  xhttp_mode="$(prompt_value '请输入 XHTTP mode' "$(edit_default XHTTP_MODE 'auto')")"
 
   yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
   if ! prompt_yes_no '确认继续安装 Trojan XHTTP TLS' 'y'; then
@@ -5560,12 +5650,12 @@ shadowsocks_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 Shadowsocks 端口，TCP/UDP 都建议在 NAT 面板转发' '10088')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  method="$(prompt_value '请输入加密方法' 'chacha20-ietf-poly1305')"
-  password="$(prompt_value '请输入 Shadowsocks 密码，留空使用随机值' "$(random_hex 16)")"
+  method="$(prompt_value '请输入加密方法' "$(edit_default SS_METHOD 'chacha20-ietf-poly1305')")"
+  password="$(prompt_value '请输入 Shadowsocks 密码，留空使用随机值' "$(edit_default SS_PASSWORD "$(random_hex 16)")")"
 
   yellow "Shadowsocks 配置为 tcp,udp；如果 NAT 面板只转发 TCP，UDP 功能不可用但 TCP 仍可用。"
   if ! prompt_yes_no '确认继续安装 Shadowsocks' 'y'; then
@@ -5624,12 +5714,12 @@ vmess_tcp_tls_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
-  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "$(edit_default TLS_DOMAIN "${server_host}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VMess TCP TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
 
   yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
   if ! prompt_yes_no '确认继续安装 VMess TCP TLS' 'y'; then
@@ -5696,13 +5786,13 @@ vmess_ws_tls_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
-  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "$(edit_default TLS_DOMAIN "${server_host}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VMess WS TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
-  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "$(edit_default WS_PATH "/$(random_hex 8)")")")"
 
   yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
   if ! prompt_yes_no '确认继续安装 VMess WS TLS' 'y'; then
@@ -5770,13 +5860,13 @@ vmess_grpc_tls_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
-  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "$(edit_default TLS_DOMAIN "${server_host}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VMess gRPC TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(random_uuid)")"
-  service_name="$(prompt_value '请输入 gRPC serviceName' "$(random_hex 8)")"
+  uuid="$(prompt_value '请输入 VMess UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  service_name="$(prompt_value '请输入 gRPC serviceName' "$(edit_default GRPC_SERVICE_NAME "$(random_hex 8)")")"
 
   yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
   if ! prompt_yes_no '确认继续安装 VMess gRPC TLS' 'y'; then
@@ -5844,13 +5934,13 @@ vless_grpc_tls_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
-  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "$(edit_default TLS_DOMAIN "${server_host}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 VLESS gRPC TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(random_uuid)")"
-  service_name="$(prompt_value '请输入 gRPC serviceName' "$(random_hex 8)")"
+  uuid="$(prompt_value '请输入 VLESS UUID，留空使用随机值' "$(edit_default XRAY_UUID "$(random_uuid)")")"
+  service_name="$(prompt_value '请输入 gRPC serviceName' "$(edit_default GRPC_SERVICE_NAME "$(random_hex 8)")")"
 
   yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
   if ! prompt_yes_no '确认继续安装 VLESS gRPC TLS' 'y'; then
@@ -5918,13 +6008,13 @@ trojan_ws_tls_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
-  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "$(edit_default TLS_DOMAIN "${server_host}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 Trojan WS TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
-  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "/$(random_hex 8)")")"
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(edit_default TROJAN_PASSWORD "$(random_hex 16)")")"
+  ws_path="$(normalize_ws_path "$(prompt_value '请输入 WebSocket 路径' "$(edit_default WS_PATH "/$(random_hex 8)")")")"
 
   yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
   if ! prompt_yes_no '确认继续安装 Trojan WS TLS' 'y'; then
@@ -5992,13 +6082,13 @@ trojan_grpc_tls_install() {
   install_base_packages
 
   detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "${detected_ip:-example.com}")"
-  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "${server_host}")"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
+  domain="$(prompt_value '请输入用于 TLS 证书和 SNI 的域名' "$(edit_default TLS_DOMAIN "${server_host}")")"
   read -r port public_port < <(prompt_nat_port_pair '请输入 Trojan gRPC TLS TCP 端口，必须在 NAT 面板转发 TCP' '443')
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(random_hex 16)")"
-  service_name="$(prompt_value '请输入 gRPC serviceName' "$(random_hex 8)")"
+  password="$(prompt_value '请输入 Trojan 密码，留空使用随机值' "$(edit_default TROJAN_PASSWORD "$(random_hex 16)")")"
+  service_name="$(prompt_value '请输入 gRPC serviceName' "$(edit_default GRPC_SERVICE_NAME "$(random_hex 8)")")"
 
   yellow "接下来会使用 DNS-01 手动 TXT 验证申请证书，不测试 80/443。"
   if ! prompt_yes_no '确认继续安装 Trojan gRPC TLS' 'y'; then
@@ -6328,8 +6418,250 @@ view_config() {
 }
 
 change_config() {
-  yellow "Xray 支持多 profile 并存；添加新协议会追加 profile。HY2 当前仍按单实例管理。"
-  protocol_menu
+  local choice
+  local profile_name
+
+  while true; do
+    cat <<EOF
+
+更改配置（重新走该协议流程，回车保留原值；TLS 域名不变不重新申请证书，失败自动回滚）：
+  1) 编辑 Xray profile
+  2) 编辑 HY2
+  0) 返回
+EOF
+    read_input choice '请选择 [0-2]: '
+    choice="${choice:-0}"
+    case "${choice}" in
+      1)
+        if [ "$(xray_profile_count)" -eq 0 ]; then
+          yellow "没有 Xray profile，请先选 1) 添加配置"
+          pause_return
+          continue
+        fi
+        profile_name="$(select_xray_profile)"
+        [ -n "${profile_name:-}" ] || continue
+        edit_xray_profile "${profile_name}"
+        ;;
+      2)
+        edit_hy2
+        ;;
+      0) return 0 ;;
+      *) yellow "无效选项" ;;
+    esac
+  done
+}
+
+atomic_install() {
+  local src="$1"
+  local dest="$2"
+  local tmp="${dest}.tmp.$$"
+
+  install -m 600 "${src}" "${tmp}"
+  mv -f "${tmp}" "${dest}"
+}
+
+edit_xray_profile() {
+  local profile_name="$1"
+  local real_env="${XRAY_PROFILE_DIR}/${profile_name}.env"
+  local real_json="${XRAY_PROFILE_DIR}/${profile_name}.json"
+  local protocol
+  local install_func
+  local was_active=0
+  local stage_root
+  local stage_profile_dir
+  local stage_config_file
+  local stage_env_file
+  local stage_service_file
+  local rc
+  local backup_dir
+  local target_json
+  local target_env
+
+  [ -f "${real_env}" ] && [ -f "${real_json}" ] || { yellow "找不到 profile：${profile_name}"; return 1; }
+  protocol="$(xray_env_value PROTOCOL "${real_env}")"
+  install_func="$(install_func_for_protocol "${protocol}")"
+  [ -n "${install_func}" ] || { yellow "暂不支持编辑协议：${protocol}"; return 1; }
+
+  require_root
+  require_linux
+
+  if [ "$(systemctl is-active xray 2>/dev/null || true)" = "active" ]; then
+    was_active=1
+  fi
+
+  stage_root="$(mktemp -d)"
+  [ -n "${stage_root:-}" ] || die "无法创建编辑临时目录"
+  stage_profile_dir="${stage_root}/profiles"
+  stage_config_file="${stage_root}/config.json"
+  stage_env_file="${stage_root}/nat-v2ray.env"
+  stage_service_file="${stage_root}/xray.service"
+  mkdir -p "${stage_profile_dir}"
+  if [ -d "${XRAY_PROFILE_DIR}" ]; then
+    cp -a "${XRAY_PROFILE_DIR}/." "${stage_profile_dir}/" 2>/dev/null || true
+  fi
+  : > "${stage_config_file}"
+  : > "${stage_env_file}"
+
+  (
+    export XRAY_CONFIG_DIR="${stage_root}"
+    export XRAY_CONFIG_FILE="${stage_config_file}"
+    export XRAY_ENV_FILE="${stage_env_file}"
+    export XRAY_PROFILE_DIR="${stage_profile_dir}"
+    export XRAY_SERVICE_FILE="${stage_service_file}"
+    export NV_EDIT_ENV_FILE="${real_env}"
+    export NV_EDIT_KIND=xray
+    export NV_EDIT_PROFILE="${profile_name}"
+    export NV_EDIT_STAGE=1
+    export NV_EDIT_WAS_ACTIVE="${was_active}"
+    export NV_EDIT_RELOADCMD=":"
+    systemctl() { :; }
+    write_xray_service() { :; }
+    "${install_func}"
+  )
+  rc=$?
+
+  if [ "${rc}" -ne 0 ]; then
+    rm -rf "${stage_root}"
+    yellow "编辑已取消或失败，真实配置未改动"
+    pause_return
+    return 1
+  fi
+
+  if [ -x "${XRAY_BIN}" ] && ! "${XRAY_BIN}" run -test -config "${stage_config_file}" >/dev/null 2>&1; then
+    rm -rf "${stage_root}"
+    yellow "候选 Xray 配置验证失败，真实配置未改动"
+    pause_return
+    return 1
+  fi
+
+  backup_dir="$(mktemp -d)"
+  target_json="${XRAY_PROFILE_DIR}/${profile_name}.json"
+  target_env="${XRAY_PROFILE_DIR}/${profile_name}.env"
+  if [ -f "${target_json}" ]; then cp -a "${target_json}" "${backup_dir}/profile.json"; fi
+  if [ -f "${target_env}" ]; then cp -a "${target_env}" "${backup_dir}/profile.env"; fi
+  if [ -f "${XRAY_ENV_FILE}" ]; then cp -a "${XRAY_ENV_FILE}" "${backup_dir}/xray.env"; fi
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then cp -a "${XRAY_CONFIG_FILE}" "${backup_dir}/config.json"; fi
+
+  (
+    atomic_install "${stage_profile_dir}/${profile_name}.json" "${target_json}"
+    atomic_install "${stage_profile_dir}/${profile_name}.env" "${target_env}"
+    atomic_install "${stage_env_file}" "${XRAY_ENV_FILE}"
+    atomic_install "${stage_config_file}" "${XRAY_CONFIG_FILE}"
+  ) || {
+    rm -rf "${stage_root}" "${backup_dir}"
+    die "提交 Xray 配置失败，真实文件可能部分已替换；请检查后重试"
+  }
+
+  if [ "${was_active}" = "1" ]; then
+    if ! systemctl restart xray; then
+      yellow "重启 xray 失败，回滚到旧配置"
+      if [ -f "${backup_dir}/profile.json" ]; then mv -f "${backup_dir}/profile.json" "${target_json}"; fi
+      if [ -f "${backup_dir}/profile.env" ]; then mv -f "${backup_dir}/profile.env" "${target_env}"; fi
+      if [ -f "${backup_dir}/xray.env" ]; then mv -f "${backup_dir}/xray.env" "${XRAY_ENV_FILE}"; fi
+      if [ -f "${backup_dir}/config.json" ]; then mv -f "${backup_dir}/config.json" "${XRAY_CONFIG_FILE}"; fi
+      systemctl restart xray >/dev/null 2>&1 || true
+      rm -rf "${stage_root}" "${backup_dir}"
+      die "重启 xray 失败，已回滚到旧配置"
+    fi
+  fi
+
+  rm -rf "${stage_root}" "${backup_dir}"
+  green "已更新 Xray profile：${profile_name}"
+  pause_return
+}
+
+edit_hy2() {
+  local real_env="${HY2_ENV_FILE}"
+  local was_active=0
+  local stage_root
+  local stage_config_file
+  local stage_env_file
+  local stage_cert_file
+  local stage_key_file
+  local stage_service_file
+  local rc
+  local backup_dir
+
+  [ -f "${real_env}" ] || { yellow "没有 HY2 配置，请先选 1) 添加配置"; pause_return; return 1; }
+
+  require_root
+  require_linux
+
+  if [ "$(systemctl is-active hysteria-server 2>/dev/null || true)" = "active" ]; then
+    was_active=1
+  fi
+
+  stage_root="$(mktemp -d)"
+  [ -n "${stage_root:-}" ] || die "无法创建编辑临时目录"
+  stage_config_file="${stage_root}/config.yaml"
+  stage_env_file="${stage_root}/nat-v2ray-hy2.env"
+  stage_cert_file="${stage_root}/server.crt"
+  stage_key_file="${stage_root}/server.key"
+  stage_service_file="${stage_root}/hysteria-server.service"
+  if [ -s "${HY2_CERT_FILE}" ]; then cp -a "${HY2_CERT_FILE}" "${stage_cert_file}"; fi
+  if [ -s "${HY2_KEY_FILE}" ]; then cp -a "${HY2_KEY_FILE}" "${stage_key_file}"; fi
+
+  (
+    export HY2_CONFIG_DIR="${stage_root}"
+    export HY2_CONFIG_FILE="${stage_config_file}"
+    export HY2_ENV_FILE="${stage_env_file}"
+    export HY2_CERT_FILE="${stage_cert_file}"
+    export HY2_KEY_FILE="${stage_key_file}"
+    export HY2_SERVICE_FILE="${stage_service_file}"
+    export NV_EDIT_ENV_FILE="${real_env}"
+    export NV_EDIT_KIND=hy2
+    export NV_EDIT_STAGE=1
+    export NV_EDIT_WAS_ACTIVE="${was_active}"
+    systemctl() { :; }
+    write_hy2_service() { :; }
+    hy2_install
+  )
+  rc=$?
+
+  if [ "${rc}" -ne 0 ]; then
+    rm -rf "${stage_root}"
+    yellow "HY2 编辑已取消或失败，真实配置未改动"
+    pause_return
+    return 1
+  fi
+
+  # 候选配置中的 staging 证书路径替换回真实路径
+  if [ -f "${stage_config_file}" ]; then
+    sed -i "s|${stage_cert_file}|${HY2_CERT_FILE}|g; s|${stage_key_file}|${HY2_KEY_FILE}|g" "${stage_config_file}"
+  fi
+
+  backup_dir="$(mktemp -d)"
+  if [ -f "${HY2_CONFIG_FILE}" ]; then cp -a "${HY2_CONFIG_FILE}" "${backup_dir}/config.yaml"; fi
+  if [ -f "${HY2_ENV_FILE}" ]; then cp -a "${HY2_ENV_FILE}" "${backup_dir}/hy2.env"; fi
+  if [ -f "${HY2_CERT_FILE}" ]; then cp -a "${HY2_CERT_FILE}" "${backup_dir}/server.crt"; fi
+  if [ -f "${HY2_KEY_FILE}" ]; then cp -a "${HY2_KEY_FILE}" "${backup_dir}/server.key"; fi
+
+  (
+    atomic_install "${stage_config_file}" "${HY2_CONFIG_FILE}"
+    atomic_install "${stage_env_file}" "${HY2_ENV_FILE}"
+    atomic_install "${stage_cert_file}" "${HY2_CERT_FILE}"
+    atomic_install "${stage_key_file}" "${HY2_KEY_FILE}"
+  ) || {
+    rm -rf "${stage_root}" "${backup_dir}"
+    die "提交 HY2 配置失败，真实文件可能部分已替换；请检查后重试"
+  }
+
+  if [ "${was_active}" = "1" ]; then
+    if ! systemctl restart hysteria-server; then
+      yellow "重启 hysteria-server 失败，回滚到旧配置"
+      if [ -f "${backup_dir}/config.yaml" ]; then mv -f "${backup_dir}/config.yaml" "${HY2_CONFIG_FILE}"; fi
+      if [ -f "${backup_dir}/hy2.env" ]; then mv -f "${backup_dir}/hy2.env" "${HY2_ENV_FILE}"; fi
+      if [ -f "${backup_dir}/server.crt" ]; then mv -f "${backup_dir}/server.crt" "${HY2_CERT_FILE}"; fi
+      if [ -f "${backup_dir}/server.key" ]; then mv -f "${backup_dir}/server.key" "${HY2_KEY_FILE}"; fi
+      systemctl restart hysteria-server >/dev/null 2>&1 || true
+      rm -rf "${stage_root}" "${backup_dir}"
+      die "重启 hysteria-server 失败，已回滚到旧配置"
+    fi
+  fi
+
+  rm -rf "${stage_root}" "${backup_dir}"
+  green "已更新 HY2 配置"
+  pause_return
 }
 
 delete_config() {
@@ -6561,6 +6893,7 @@ show_help() {
 
 说明：
   每个 Xray 节点会保存为独立 profile，并自动重建总配置以便多节点同时运行。
+  2) 更改配置原地编辑现有节点，回车保留原值；TLS 域名不变不重新申请证书，失败自动回滚。
   TLS 类协议使用 DNS-01 手动 TXT 验证，不依赖 80/443 入站端口。
   安装时会分别询问本机监听端口和外网连接端口。
   服务端配置监听本机端口，分享链接使用外网连接端口。
@@ -6832,6 +7165,49 @@ control_panel() {
       *) yellow "无效选项" ;;
     esac
   done
+}
+
+install_func_for_protocol() {
+  case "$1" in
+    reality) printf 'reality_install\n' ;;
+    vless-tcp) printf 'vless_tcp_install\n' ;;
+    vless-ws) printf 'vless_ws_install\n' ;;
+    vless-grpc) printf 'vless_grpc_install\n' ;;
+    vless-httpupgrade) printf 'vless_httpupgrade_install\n' ;;
+    vless-xhttp) printf 'vless_xhttp_install\n' ;;
+    vless-tcp-tls) printf 'vless_tcp_tls_install\n' ;;
+    vless-ws-tls) printf 'vless_ws_tls_install\n' ;;
+    vless-grpc-tls) printf 'vless_grpc_tls_install\n' ;;
+    vless-xhttp-tls) printf 'vless_xhttp_tls_install\n' ;;
+    vless-tcp-dynamic) printf 'vless_tcp_dynamic_install\n' ;;
+    vless-ws-dynamic) printf 'vless_ws_dynamic_install\n' ;;
+    vless-mkcp) printf 'vless_mkcp_install\n' ;;
+    vless-mkcp-dynamic) printf 'vless_mkcp_dynamic_install\n' ;;
+    vmess-tcp) printf 'vmess_tcp_install\n' ;;
+    vmess-ws) printf 'vmess_ws_install\n' ;;
+    vmess-grpc) printf 'vmess_grpc_install\n' ;;
+    vmess-httpupgrade) printf 'vmess_httpupgrade_install\n' ;;
+    vmess-xhttp) printf 'vmess_xhttp_install\n' ;;
+    vmess-tcp-tls) printf 'vmess_tcp_tls_install\n' ;;
+    vmess-ws-tls) printf 'vmess_ws_tls_install\n' ;;
+    vmess-grpc-tls) printf 'vmess_grpc_tls_install\n' ;;
+    vmess-xhttp-tls) printf 'vmess_xhttp_tls_install\n' ;;
+    vmess-tcp-dynamic) printf 'vmess_tcp_dynamic_install\n' ;;
+    vmess-ws-dynamic) printf 'vmess_ws_dynamic_install\n' ;;
+    vmess-mkcp) printf 'vmess_mkcp_install\n' ;;
+    vmess-mkcp-dynamic) printf 'vmess_mkcp_dynamic_install\n' ;;
+    trojan-tcp) printf 'trojan_tcp_install\n' ;;
+    trojan-ws) printf 'trojan_ws_install\n' ;;
+    trojan-grpc) printf 'trojan_grpc_install\n' ;;
+    trojan-httpupgrade) printf 'trojan_httpupgrade_install\n' ;;
+    trojan-xhttp) printf 'trojan_xhttp_install\n' ;;
+    trojan-tls) printf 'trojan_tls_install\n' ;;
+    trojan-ws-tls) printf 'trojan_ws_tls_install\n' ;;
+    trojan-grpc-tls) printf 'trojan_grpc_tls_install\n' ;;
+    trojan-xhttp-tls) printf 'trojan_xhttp_tls_install\n' ;;
+    shadowsocks) printf 'shadowsocks_install\n' ;;
+    *) return 1 ;;
+  esac
 }
 
 run_protocol_install_by_choice() {

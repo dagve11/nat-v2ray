@@ -932,5 +932,185 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("exit 0", protocol_body)
 
 
+class EditConfigTests(unittest.TestCase):
+    def test_edit_context_helpers_exist_and_use_safe_expansion(self) -> None:
+        script = read_install_script()
+        for fn in ("edit_env_has_key", "edit_env_value", "edit_default", "edit_target_default"):
+            self.assertIn(fn + "()", script)
+        # 编辑上下文只读 env 文件，不批量导出、不 source/eval env 内容
+        for var in ("NV_EDIT_ENV_FILE", "NV_EDIT_KIND", "NV_EDIT_PROFILE", "NV_EDIT_STAGE", "NV_EDIT_WAS_ACTIVE"):
+            self.assertIn(var, script)
+        self.assertIn('xray_env_value "${key}" "${NV_EDIT_ENV_FILE:-}"', script)
+        self.assertNotIn("load_edit_context", script)
+        self.assertNotIn("clear_edit_context", script)
+        # set -u 安全：所有 NV_EDIT_ 引用必须带 :-
+        import re
+        for m in re.finditer(r'\$\{NV_EDIT_[A-Z_]+\}', script):
+            self.fail("NV_EDIT_ 变量未带 :- 默认值：" + m.group(0))
+        # 非编辑模式必须回退 fallback，不能 die
+        edit_default_start = script.index("edit_default()")
+        edit_default_end = script.index("\nedit_target_default()", edit_default_start)
+        edit_default_body = script[edit_default_start:edit_default_end]
+        self.assertIn('if [ -z "${NV_EDIT_ENV_FILE:-}" ]; then', edit_default_body)
+        self.assertIn('printf \'%s\\n\' "${fallback}"', edit_default_body)
+
+    def test_edit_target_default_maps_xray_and_hy2(self) -> None:
+        script = read_install_script()
+        target_start = script.index("edit_target_default()")
+        target_end = script.index("\nsanitize_profile_name()", target_start)
+        target_body = script[target_start:target_end]
+        self.assertIn('xray) key="XRAY_${suffix}" ;;', target_body)
+        self.assertIn('hy2)  key="HY2_${suffix}" ;;', target_body)
+
+    def test_register_xray_profile_uses_edit_profile_in_place(self) -> None:
+        script = read_install_script()
+        self.assertIn('profile_name="${NV_EDIT_PROFILE:-$(xray_profile_name)}"', script)
+
+    def test_edit_xray_profile_uses_staging_subshell_with_noop_systemctl(self) -> None:
+        script = read_install_script()
+        edit_start = script.index("edit_xray_profile()")
+        edit_end = script.index("\nedit_hy2()", edit_start)
+        body = script[edit_start:edit_end]
+        self.assertIn('mktemp -d', body)
+        self.assertIn('cp -a "${XRAY_PROFILE_DIR}/." "${stage_profile_dir}/"', body)
+        self.assertIn('export XRAY_CONFIG_DIR="${stage_root}"', body)
+        self.assertIn('export NV_EDIT_ENV_FILE="${real_env}"', body)
+        self.assertIn('export NV_EDIT_STAGE=1', body)
+        self.assertIn('export NV_EDIT_WAS_ACTIVE="${was_active}"', body)
+        self.assertIn('systemctl() { :; }', body)
+        self.assertIn('write_xray_service() { :; }', body)
+        self.assertIn('export NV_EDIT_RELOADCMD=":"', body)
+        self.assertIn('"${XRAY_BIN}" run -test -config "${stage_config_file}"', body)
+        self.assertIn("提交 Xray 配置失败", body)
+        self.assertIn('atomic_install "${stage_profile_dir}/${profile_name}.json" "${target_json}"', body)
+        self.assertIn('atomic_install "${stage_env_file}" "${XRAY_ENV_FILE}"', body)
+        self.assertIn('atomic_install "${stage_config_file}" "${XRAY_CONFIG_FILE}"', body)
+        self.assertIn('was_active', body)
+        self.assertIn("回滚到旧配置", body)
+
+    def test_ensure_port_available_has_edit_mode_branch(self) -> None:
+        script = read_install_script()
+        epa_start = script.index("ensure_port_available()")
+        epa_end = script.index("\nrender_hy2_config()", epa_start)
+        body = script[epa_start:epa_end]
+        self.assertIn('${NV_EDIT_STAGE:-0}', body)
+        self.assertIn('${NV_EDIT_WAS_ACTIVE:-0}', body)
+        self.assertIn('edit_target_default LISTEN_PORT', body)
+        self.assertIn("编辑模式不会停用其他服务", body)
+
+    def test_change_config_dispatches_to_edit(self) -> None:
+        script = read_install_script()
+        cc_start = script.index("change_config()")
+        cc_end = script.index("\natomic_install()", cc_start)
+        body = script[cc_start:cc_end]
+        self.assertIn("编辑 Xray profile", body)
+        self.assertIn("编辑 HY2", body)
+        self.assertIn('edit_xray_profile "${profile_name}"', body)
+        self.assertIn("edit_hy2", body)
+
+    def test_atomic_install_is_atomic_tmp_mv(self) -> None:
+        script = read_install_script()
+        ai_start = script.index("atomic_install()")
+        ai_end = script.index("\nedit_xray_profile()", ai_start)
+        body = script[ai_start:ai_end]
+        self.assertIn('tmp="${dest}.tmp.$$"', body)
+        self.assertIn('install -m 600 "${src}" "${tmp}"', body)
+        self.assertIn('mv -f "${tmp}" "${dest}"', body)
+
+    def test_reality_edit_reuses_existing_keys(self) -> None:
+        script = read_install_script()
+        reality_start = script.index("reality_install()")
+        reality_end = script.index("\nrequest_tls_cert_manual_dns()", reality_start)
+        body = script[reality_start:reality_end]
+        self.assertIn('${NV_EDIT_PROFILE:-}', body)
+        self.assertIn("edit_env_has_key REALITY_PRIVATE_KEY", body)
+        self.assertIn("edit_env_has_key REALITY_PUBLIC_KEY", body)
+        self.assertIn("Reality 编辑缺少密钥字段", body)
+        self.assertIn("generate_reality_keys", body)
+
+    def test_tls_edit_fast_path_reuses_before_acme(self) -> None:
+        script = read_install_script()
+        cert_start = script.index("request_tls_cert_manual_dns()")
+        cert_end = script.index("\nrender_vless_tcp_tls_config()", cert_start)
+        body = script[cert_start:cert_end]
+        self.assertIn('${NV_EDIT_STAGE:-0}', body)
+        self.assertIn("openssl x509 -checkend 0", body)
+        self.assertLess(body.index('${NV_EDIT_STAGE:-0}'), body.index("install_acme_sh"))
+
+    def test_acme_reloadcmd_is_noop_in_staging(self) -> None:
+        script = read_install_script()
+        self.assertIn('--reloadcmd "${NV_EDIT_RELOADCMD:-', script)
+        self.assertIn('export NV_EDIT_RELOADCMD=":"', script)
+
+    def test_create_self_signed_cert_reuses_when_host_unchanged(self) -> None:
+        script = read_install_script()
+        cssc_start = script.index("create_self_signed_cert()")
+        cssc_end = script.index("\nbuild_hy2_uri()", cssc_start)
+        body = script[cssc_start:cssc_end]
+        self.assertIn('${NV_EDIT_STAGE:-0}', body)
+        self.assertIn("existing_cn", body)
+        self.assertIn("openssl x509 -noout -subject", body)
+
+    def test_edit_hy2_stages_and_atomic_commits(self) -> None:
+        script = read_install_script()
+        hy2_start = script.index("edit_hy2()")
+        hy2_end = script.index("\ndelete_config()", hy2_start)
+        body = script[hy2_start:hy2_end]
+        self.assertIn('export HY2_CONFIG_FILE="${stage_config_file}"', body)
+        self.assertIn('systemctl() { :; }', body)
+        self.assertIn("sed -i", body)
+        self.assertIn('atomic_install "${stage_config_file}" "${HY2_CONFIG_FILE}"', body)
+        self.assertIn("回滚到旧配置", body)
+        self.assertIn("提交 HY2 配置失败", body)
+
+    def test_install_func_for_protocol_maps_all_thirty_seven(self) -> None:
+        script = read_install_script()
+        self.assertIn("install_func_for_protocol()", script)
+        expected = {
+            "reality": "reality_install",
+            "vless-tcp": "vless_tcp_install",
+            "vless-ws": "vless_ws_install",
+            "vless-grpc": "vless_grpc_install",
+            "vless-httpupgrade": "vless_httpupgrade_install",
+            "vless-xhttp": "vless_xhttp_install",
+            "vless-tcp-tls": "vless_tcp_tls_install",
+            "vless-ws-tls": "vless_ws_tls_install",
+            "vless-grpc-tls": "vless_grpc_tls_install",
+            "vless-xhttp-tls": "vless_xhttp_tls_install",
+            "vless-tcp-dynamic": "vless_tcp_dynamic_install",
+            "vless-ws-dynamic": "vless_ws_dynamic_install",
+            "vless-mkcp": "vless_mkcp_install",
+            "vless-mkcp-dynamic": "vless_mkcp_dynamic_install",
+            "vmess-tcp": "vmess_tcp_install",
+            "vmess-ws": "vmess_ws_install",
+            "vmess-grpc": "vmess_grpc_install",
+            "vmess-httpupgrade": "vmess_httpupgrade_install",
+            "vmess-xhttp": "vmess_xhttp_install",
+            "vmess-tcp-tls": "vmess_tcp_tls_install",
+            "vmess-ws-tls": "vmess_ws_tls_install",
+            "vmess-grpc-tls": "vmess_grpc_tls_install",
+            "vmess-xhttp-tls": "vmess_xhttp_tls_install",
+            "vmess-tcp-dynamic": "vmess_tcp_dynamic_install",
+            "vmess-ws-dynamic": "vmess_ws_dynamic_install",
+            "vmess-mkcp": "vmess_mkcp_install",
+            "vmess-mkcp-dynamic": "vmess_mkcp_dynamic_install",
+            "trojan-tcp": "trojan_tcp_install",
+            "trojan-ws": "trojan_ws_install",
+            "trojan-grpc": "trojan_grpc_install",
+            "trojan-httpupgrade": "trojan_httpupgrade_install",
+            "trojan-xhttp": "trojan_xhttp_install",
+            "trojan-tls": "trojan_tls_install",
+            "trojan-ws-tls": "trojan_ws_tls_install",
+            "trojan-grpc-tls": "trojan_grpc_tls_install",
+            "trojan-xhttp-tls": "trojan_xhttp_tls_install",
+            "shadowsocks": "shadowsocks_install",
+        }
+        self.assertEqual(len(expected), 37)
+        for proto, func in expected.items():
+            self.assertIn(proto + ")", script, "missing protocol case: " + proto)
+            self.assertIn("printf '" + func + r"\n'", script, "missing function mapping: " + func)
+        self.assertIn("*) return 1 ;;", script)
+
+
 if __name__ == "__main__":
     unittest.main()
