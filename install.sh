@@ -1468,6 +1468,7 @@ wait_for_txt_record() {
   local expected_value="$2"
   local record
   local current
+  local choice
   record="$(tls_txt_record_name "${domain}")"
 
   blue "请添加 TXT 记录："
@@ -1482,17 +1483,22 @@ wait_for_txt_record() {
       return 0
     fi
 
-    yellow "还没检测到目标 TXT。当前值："
+    echo
+    yellow "还没检测到目标 TXT："
+    echo "记录名：${record}"
+    echo "期望值：${expected_value}"
     if [ -n "${current}" ]; then
-      printf '%s\n' "${current}"
+      echo "当前值：${current}"
     else
-      echo "(无)"
+      echo "当前值：(无)"
     fi
 
-    if ! prompt_yes_no '等待 15 秒后重试' 'y'; then
-      return 1
-    fi
-    sleep 15
+    read_input choice '回车=15秒后重试  r=立即重检  q=放弃: '
+    case "${choice}" in
+      r|R) continue ;;
+      q|Q|n|N) return 1 ;;
+      *) sleep 15 ;;
+    esac
   done
 }
 
