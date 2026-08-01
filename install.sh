@@ -1013,7 +1013,6 @@ hy2_info() {
 
   require_linux
   if [ ! -f "${HY2_ENV_FILE}" ]; then
-    yellow "未找到 HY2 配置"
     return 0
   fi
 
