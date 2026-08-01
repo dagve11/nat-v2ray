@@ -692,8 +692,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=${XRAY_BIN} run -config ${XRAY_CONFIG_FILE}
-Restart=on-failure
-RestartSec=5
+Restart=always
+RestartSec=3
 LimitNOFILE=1048576
 
 [Install]
@@ -1296,8 +1296,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=${HYSTERIA_BIN} server -c ${HY2_CONFIG_FILE}
-Restart=on-failure
-RestartSec=5
+Restart=always
+RestartSec=3
 LimitNOFILE=1048576
 
 [Install]
@@ -6963,6 +6963,10 @@ uninstall_full() {
     sed -i '/nat-v2ray/d;/alias nv=/d;/\/usr\/local\/bin\/nv/d' /root/.bashrc || true
   fi
 
+  rm -f /usr/local/bin/nat-v2ray-watchdog
+  if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -q nat-v2ray-watchdog; then
+    crontab -l 2>/dev/null | grep -v nat-v2ray-watchdog | crontab - 2>/dev/null || true
+  fi
   systemctl daemon-reload >/dev/null 2>&1 || true
   green "卸载完成!"
   echo "脚本哪里需要完善? 请反馈"
@@ -7010,6 +7014,61 @@ EOF
   pause_return
 }
 
+setup_keepalive() {
+  local watchdog="/usr/local/bin/nat-v2ray-watchdog"
+  local cron_entry="* * * * * ${watchdog}"
+
+  require_root
+  require_linux
+
+  echo
+  blue "配置保活："
+
+  if [ -f /etc/alpine-release ]; then
+    yellow "Alpine/OpenRC：依赖 cron 看门狗（每分钟检测进程，down 自动 rc-service 重启）"
+  else
+    write_xray_service
+    write_hy2_service
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    green "systemd unit 已更新：Restart=always RestartSec=3（崩溃/被杀均自动重启）"
+    systemctl restart xray >/dev/null 2>&1 || true
+    systemctl restart hysteria-server >/dev/null 2>&1 || true
+  fi
+
+  cat > "${watchdog}" <<'WATCHDOG'
+#!/bin/sh
+# nat-v2ray keepalive watchdog: 进程不在则重启（systemd 用 systemctl，Alpine 用 rc-service）
+restart_service() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl restart "$1" 2>/dev/null
+  elif command -v rc-service >/dev/null 2>&1; then
+    rc-service "$1" restart 2>/dev/null
+  fi
+}
+if [ -x /usr/local/bin/xray ] && command -v pgrep >/dev/null 2>&1 && ! pgrep -x xray >/dev/null 2>&1; then
+  restart_service xray
+fi
+if [ -x /usr/local/bin/hysteria ] && command -v pgrep >/dev/null 2>&1 && ! pgrep -x hysteria >/dev/null 2>&1; then
+  restart_service hysteria-server
+fi
+WATCHDOG
+  chmod 0755 "${watchdog}"
+
+  if command -v crontab >/dev/null 2>&1; then
+    if ! crontab -l 2>/dev/null | grep -qF "${watchdog}"; then
+      (crontab -l 2>/dev/null || true; printf '%s\n' "${cron_entry}") | crontab -
+    fi
+    green "cron 看门狗已安装：每分钟检测 xray/hysteria 进程，down 自动重启"
+    echo "看门狗脚本：${watchdog}"
+    echo "crontab：${cron_entry}"
+  else
+    yellow "未找到 crontab，看门狗未安装（systemd Restart=always 仍生效）"
+  fi
+
+  green "保活配置完成"
+  pause_return
+}
+
 other_tools() {
   local choice
 
@@ -7021,15 +7080,17 @@ other_tools() {
   2) 查看监听端口
   3) 安装/修复 nv 命令
   4) 测试 Xray 配置
+  5) 保活配置
   0) 返回
 EOF
-    read_input choice '请选择 [0-4]: '
+    read_input choice '请选择 [0-5]: '
     choice="${choice:-0}"
     case "${choice}" in
       1) txt_check_tool; pause_return ;;
       2) ss -lntup 2>/dev/null || true; pause_return ;;
       3) install_nv_command && green "nv 已安装：${NV_BIN}"; pause_return ;;
       4) xray_test_run; pause_return ;;
+      5) setup_keepalive ;;
       0) return 0 ;;
       *) yellow "无效选项" ;;
     esac

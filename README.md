@@ -135,6 +135,17 @@ nv test         # 使用 Xray 自带 test 模式验证当前总配置
 - HY2 host 不变时复用证书和私钥，pinSHA256 不变。
 - 收集输入、确认和等待 TXT 期间现有服务继续运行；候选配置验证通过才原子替换，失败自动回滚到旧配置。
 
+## 保活
+
+`9) 其他 → 保活配置` 配置完整保活：
+
+- systemd unit 改为 `Restart=always` `RestartSec=3`：进程崩溃或被杀都自动重启（3 秒），开机自启。
+- 安装 cron 看门狗：每分钟检测 xray/hysteria 进程，不在则自动重启（systemd 用 `systemctl`，Alpine 用 `rc-service`）。
+- Alpine/OpenRC 无 unit 级 respawn，依赖 cron 看门狗保活。
+- 完全卸载时会自动移除看门狗脚本和 crontab 条目。
+
+不包含网络流量保活（防 NAT 机器回收），那超出脚本范围。
+
 ## 支持协议
 
 | 类型 | 协议 |
