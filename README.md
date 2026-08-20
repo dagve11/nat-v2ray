@@ -159,7 +159,7 @@ nv test         # 使用 Xray 自带 test 模式验证当前总配置
 | TCP TLS | Trojan TLS / WS TLS / gRPC TLS / XHTTP TLS |
 | Dynamic port | VLESS TCP / WS dynamic port、VMess TCP / WS dynamic port |
 | Dynamic port | VLESS mKCP dynamic port、VMess mKCP dynamic port |
-| 其他 | VLESS Reality、Shadowsocks |
+| 其他 | VLESS Reality、Shadowsocks、HTTP-Proxy、SOCKS5-Proxy |
 
 Xray 26.x 已移除旧 HTTP/2 `http` 传输；需要类似 H2/H3 的方向时优先使用 XHTTP / XHTTP TLS。
 
@@ -184,6 +184,7 @@ Xray 26.x 已移除旧 HTTP/2 `http` 传输；需要类似 H2/H3 的方向时优
 | Reality、TCP、WS、gRPC、HTTPUpgrade、XHTTP、TLS | TCP 单端口 |
 | VLESS / VMess TCP/WS dynamic port | TCP 端口范围 |
 | Shadowsocks | 建议 TCP + UDP；只转发 TCP 时 UDP 不可用 |
+  | HTTP-Proxy / SOCKS5-Proxy | TCP 单端口；SOCKS5 的 UDP 需额外转发 UDP，不转发不影响 TCP |
 
 Dynamic port 和 mKCP dynamic port 会要求输入本机端口范围和外网端口范围；两个范围的端口数量必须一致。
 
@@ -247,6 +248,8 @@ TLS 相关配置不做真实连通测试，因为证书签发依赖用户的 DNS
 37) VLESS-XHTTP-TLS
 38) VMess-XHTTP-TLS
 39) Trojan-XHTTP-TLS
+40) HTTP-Proxy
+41) SOCKS5-Proxy
 0) 退出
 ```
 

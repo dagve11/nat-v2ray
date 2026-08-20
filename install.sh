@@ -3637,6 +3637,135 @@ $(render_kcp_transport_settings "${header_type}" "${seed}")
 EOF
 }
 
+render_http_proxy_config() {
+  local port="$1"
+  local user="$2"
+  local pass="$3"
+
+  if [ -n "${user}" ]; then
+    cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "http-proxy",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "http",
+      "settings": {
+        "accounts": [
+          {
+            "user": "${user}",
+            "pass": "${pass}"
+          }
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+  else
+    cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "http-proxy",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "http",
+      "settings": {
+        "timeout": 0
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+  fi
+}
+
+render_socks5_proxy_config() {
+  local port="$1"
+  local user="$2"
+  local pass="$3"
+
+  if [ -n "${user}" ]; then
+    cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "socks5-proxy",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "socks",
+      "settings": {
+        "auth": "password",
+        "udp": true,
+        "accounts": [
+          {
+            "user": "${user}",
+            "pass": "${pass}"
+          }
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+  else
+    cat <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "socks5-proxy",
+      "listen": "0.0.0.0",
+      "port": ${port},
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+  fi
+}
+
 render_shadowsocks_config() {
   local port="$1"
   local method="$2"
@@ -5696,6 +5825,150 @@ EOF
   echo "${uri}"
 }
 
+http_proxy_install() {
+  local detected_ip
+  local server_host
+  local port
+  local public_port
+  local user
+  local pass
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
+  read -r port public_port < <(prompt_nat_port_pair '请输入 HTTP 代理 TCP 端口，必须在 NAT 面板转发 TCP' '10080')
+  ensure_port_available port
+  show_nat_port_mapping "${port}" "${public_port}" '端口'
+  user="$(prompt_value '请输入 HTTP 代理用户名，留空表示无认证' "$(edit_default HTTP_USER '')")"
+  if [ -n "${user}" ]; then
+    pass="$(prompt_value '请输入 HTTP 代理密码，留空使用随机值' "$(edit_default HTTP_PASS "$(random_hex 8)")")"
+  else
+    pass="$(edit_default HTTP_PASS '')"
+  fi
+
+  yellow "HTTP 代理为明文传输，建议仅用于临时测试或配合 TLS 隧道使用。"
+  if ! prompt_yes_no '确认继续安装 HTTP 代理' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_http_proxy_config "${port}" "${user}" "${pass}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=http-proxy
+XRAY_HOST=${server_host}
+XRAY_LISTEN_PORT=${port}
+XRAY_PUBLIC_PORT=${public_port}
+XRAY_PORT=${public_port}
+HTTP_USER=${user}
+HTTP_PASS=${pass}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  if [ -n "${user}" ]; then
+    uri="http://$(urlencode "${user}"):$(urlencode "${pass}")@${server_host}:${public_port}"
+  else
+    uri="http://${server_host}:${public_port}"
+  fi
+  append_xray_uri_and_register "${uri}"
+
+  echo
+  green "HTTP 代理安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "连接信息："
+  echo "${uri}"
+}
+
+socks5_proxy_install() {
+  local detected_ip
+  local server_host
+  local port
+  local public_port
+  local user
+  local pass
+  local uri
+
+  require_root
+  require_linux
+  install_base_packages
+
+  detected_ip="$(public_ipv4)"
+  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
+  read -r port public_port < <(prompt_nat_port_pair '请输入 SOCKS5 代理 TCP 端口，必须在 NAT 面板转发 TCP' '10081')
+  ensure_port_available port
+  show_nat_port_mapping "${port}" "${public_port}" '端口'
+  user="$(prompt_value '请输入 SOCKS5 代理用户名，留空表示无认证' "$(edit_default SOCKS_USER '')")"
+  if [ -n "${user}" ]; then
+    pass="$(prompt_value '请输入 SOCKS5 代理密码，留空使用随机值' "$(edit_default SOCKS_PASS "$(random_hex 8)")")"
+  else
+    pass="$(edit_default SOCKS_PASS '')"
+  fi
+
+  yellow "SOCKS5 代理为明文传输，建议仅用于临时测试或配合 TLS 隧道使用。"
+  if ! prompt_yes_no '确认继续安装 SOCKS5 代理' 'y'; then
+    die "用户取消"
+  fi
+
+  install_xray_binary
+  mkdir -p "${XRAY_CONFIG_DIR}"
+  if [ -f "${XRAY_CONFIG_FILE}" ]; then
+    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  render_socks5_proxy_config "${port}" "${user}" "${pass}" > "${XRAY_CONFIG_FILE}"
+  chmod 600 "${XRAY_CONFIG_FILE}"
+
+  cat > "${XRAY_ENV_FILE}" <<EOF
+PROTOCOL=socks5-proxy
+XRAY_HOST=${server_host}
+XRAY_LISTEN_PORT=${port}
+XRAY_PUBLIC_PORT=${public_port}
+XRAY_PORT=${public_port}
+SOCKS_USER=${user}
+SOCKS_PASS=${pass}
+EOF
+  chmod 600 "${XRAY_ENV_FILE}"
+
+  write_xray_service
+  systemctl daemon-reload
+  systemctl enable --now xray
+  systemctl restart xray
+
+  if [ -n "${user}" ]; then
+    uri="socks5://$(urlencode "${user}"):$(urlencode "${pass}")@${server_host}:${public_port}"
+  else
+    uri="socks5://${server_host}:${public_port}"
+  fi
+  append_xray_uri_and_register "${uri}"
+
+  echo
+  green "SOCKS5 代理安装完成"
+  echo "服务状态：$(systemctl is-active xray || true)"
+  echo
+  echo "监听检查："
+  ss -lntp | grep "${port}" || true
+  echo
+  echo "连接信息："
+  echo "${uri}"
+}
+
 vmess_tcp_tls_install() {
   local detected_ip
   local server_host
@@ -6195,6 +6468,8 @@ show_menu() {
   37) VLESS-XHTTP-TLS
   38) VMess-XHTTP-TLS
   39) Trojan-XHTTP-TLS
+  40) HTTP-Proxy
+  41) SOCKS5-Proxy
   0) 退出
 EOF
 }
@@ -7374,6 +7649,8 @@ install_func_for_protocol() {
     trojan-ws-tls) printf 'trojan_ws_tls_install\n' ;;
     trojan-grpc-tls) printf 'trojan_grpc_tls_install\n' ;;
     trojan-xhttp-tls) printf 'trojan_xhttp_tls_install\n' ;;
+    http-proxy) printf 'http_proxy_install\n' ;;
+    socks5-proxy) printf 'socks5_proxy_install\n' ;;
     shadowsocks) printf 'shadowsocks_install\n' ;;
     *) return 1 ;;
   esac
@@ -7421,6 +7698,8 @@ run_protocol_install_by_choice() {
     37) vless_xhttp_tls_install ;;
     38) vmess_xhttp_tls_install ;;
     39) trojan_xhttp_tls_install ;;
+    40) http_proxy_install ;;
+    41) socks5_proxy_install ;;
     *) return 1 ;;
   esac
 }

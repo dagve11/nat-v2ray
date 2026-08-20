@@ -134,6 +134,8 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("37) VLESS-XHTTP-TLS", script)
         self.assertIn("38) VMess-XHTTP-TLS", script)
         self.assertIn("39) Trojan-XHTTP-TLS", script)
+        self.assertIn("40) HTTP-Proxy", script)
+        self.assertIn("41) SOCKS5-Proxy", script)
         self.assertNotIn("2) VLESS Reality - TCP，不需要 TLS 证书", script)
 
     def test_nv_control_panel_is_available(self) -> None:
@@ -456,6 +458,23 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('"password": "${password}"', script)
         self.assertIn("build_shadowsocks_uri()", script)
         self.assertIn("ss://", script)
+
+    def test_http_and_socks5_proxy_options_render_xray_configs(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("render_http_proxy_config()", script)
+        self.assertIn("render_socks5_proxy_config()", script)
+        self.assertIn("http_proxy_install()", script)
+        self.assertIn("socks5_proxy_install()", script)
+        self.assertIn('"protocol": "http"', script)
+        self.assertIn('"protocol": "socks"', script)
+        self.assertIn('"auth": "noauth"', script)
+        self.assertIn('"auth": "password"', script)
+        self.assertIn('"accounts"', script)
+        self.assertIn('"udp": true', script)
+        self.assertIn("PROTOCOL=http-proxy", script)
+        self.assertIn("PROTOCOL=socks5-proxy", script)
+        self.assertIn("socks5://", script)
 
     def test_tls_ws_grpc_protocols_render_configs_and_links(self) -> None:
         script = read_install_script()
@@ -927,6 +946,8 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("run_protocol_install_by_choice()", script)
         self.assertIn("1) hy2_install ;;", helper_body)
         self.assertIn("39) trojan_xhttp_tls_install ;;", helper_body)
+        self.assertIn("40) http_proxy_install ;;", helper_body)
+        self.assertIn("41) socks5_proxy_install ;;", helper_body)
         self.assertIn('31) txt_check_tool ;;', protocol_body)
         self.assertIn('if run_protocol_install_by_choice "${choice}"; then', protocol_body)
         self.assertIn("exit 0", protocol_body)
@@ -1067,7 +1088,7 @@ class EditConfigTests(unittest.TestCase):
         self.assertIn("回滚到旧配置", body)
         self.assertIn("提交 HY2 配置失败", body)
 
-    def test_install_func_for_protocol_maps_all_thirty_seven(self) -> None:
+    def test_install_func_for_protocol_maps_all_thirty_nine(self) -> None:
         script = read_install_script()
         self.assertIn("install_func_for_protocol()", script)
         expected = {
@@ -1108,8 +1129,10 @@ class EditConfigTests(unittest.TestCase):
             "trojan-grpc-tls": "trojan_grpc_tls_install",
             "trojan-xhttp-tls": "trojan_xhttp_tls_install",
             "shadowsocks": "shadowsocks_install",
+            "http-proxy": "http_proxy_install",
+            "socks5-proxy": "socks5_proxy_install",
         }
-        self.assertEqual(len(expected), 37)
+        self.assertEqual(len(expected), 39)
         for proto, func in expected.items():
             self.assertIn(proto + ")", script, "missing protocol case: " + proto)
             self.assertIn("printf '" + func + r"\n'", script, "missing function mapping: " + func)
