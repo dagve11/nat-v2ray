@@ -71,7 +71,7 @@ HY2 使用自签证书时，脚本会同时生成两条链接：
 `nv` 会打开 233boy 风格的总控台：
 
 ```text
-------------- nat-v2ray 0.17.1 by AG666 -------------
+------------- nat-v2ray 0.18.0 by AG666 -------------
 Xray 26.3.27: running
 命令: nv
 仓库: https://github.com/dagve11/nat-v2ray

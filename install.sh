@@ -3704,6 +3704,7 @@ render_socks5_proxy_config() {
   local port="$1"
   local user="$2"
   local pass="$3"
+  local udp_ip="${4:-127.0.0.1}"
 
   if [ -n "${user}" ]; then
     cat <<EOF
@@ -3720,6 +3721,7 @@ render_socks5_proxy_config() {
       "settings": {
         "auth": "password",
         "udp": true,
+        "ip": "${udp_ip}",
         "accounts": [
           {
             "user": "${user}",
@@ -3751,7 +3753,8 @@ EOF
       "protocol": "socks",
       "settings": {
         "auth": "noauth",
-        "udp": true
+        "udp": true,
+        "ip": "${udp_ip}"
       }
     }
   ],
@@ -5871,7 +5874,7 @@ plain_proxy_install_common() {
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
     cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
   fi
-  "${render_func}" "${port}" "${user}" "${pass}" > "${XRAY_CONFIG_FILE}"
+  "${render_func}" "${port}" "${user}" "${pass}" "${server_host}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
 
   cat > "${XRAY_ENV_FILE}" <<EOF
@@ -7246,6 +7249,7 @@ show_help() {
   安装时会分别询问本机监听端口和外网连接端口。
   服务端配置监听本机端口，分享链接使用外网连接端口。
   NAT 面板必须按协议类型把外网 TCP、UDP 或端口范围转发到本机。
+  HTTP/SOCKS5 是明文代理，建议仅临时测试或配合 TLS 隧道使用。
 EOF
   pause_return
 }
@@ -7507,7 +7511,7 @@ nat-v2ray ${VERSION}
 仓库：${REPO_URL}
 命令：nv
 
-面向 NAT VPS 的多协议一键脚本，支持 HY2、Reality、VLESS、VMess、Trojan、Shadowsocks。
+面向 NAT VPS 的多协议一键脚本，支持 HY2、Reality、VLESS、VMess、Trojan、Shadowsocks、HTTP、SOCKS5。
 EOF
 }
 
