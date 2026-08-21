@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.17.1"
+VERSION="0.18.0"
 PROJECT_NAME="nat-v2ray"
 REPO_URL="https://github.com/dagve11/nat-v2ray"
 SCRIPT_URL="https://raw.githubusercontent.com/dagve11/nat-v2ray/main/install.sh"
@@ -5825,7 +5825,15 @@ EOF
   echo "${uri}"
 }
 
-http_proxy_install() {
+plain_proxy_install_common() {
+  local protocol="$1"
+  local display="$2"
+  local default_port="$3"
+  local user_key="$4"
+  local pass_key="$5"
+  local scheme="$6"
+  local render_func="$7"
+
   local detected_ip
   local server_host
   local port
@@ -5840,18 +5848,21 @@ http_proxy_install() {
 
   detected_ip="$(public_ipv4)"
   server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
-  read -r port public_port < <(prompt_nat_port_pair '请输入 HTTP 代理 TCP 端口，必须在 NAT 面板转发 TCP' '10080')
+  read -r port public_port < <(prompt_nat_port_pair "请输入 ${display} TCP 端口，必须在 NAT 面板转发 TCP" "${default_port}")
   ensure_port_available port
   show_nat_port_mapping "${port}" "${public_port}" '端口'
-  user="$(prompt_value '请输入 HTTP 代理用户名，留空表示无认证' "$(edit_default HTTP_USER '')")"
-  if [ -n "${user}" ]; then
-    pass="$(prompt_value '请输入 HTTP 代理密码，留空使用随机值' "$(edit_default HTTP_PASS "$(random_hex 8)")")"
+  user="$(prompt_value "请输入 ${display} 用户名，留空保留当前值，输入 - 表示无认证" "$(edit_default "${user_key}" '')")"
+  if [ "${user}" = "-" ]; then
+    user=""
+    pass=""
+  elif [ -n "${user}" ]; then
+    pass="$(prompt_value "请输入 ${display} 密码，留空使用随机值" "$(edit_default "${pass_key}" "$(random_hex 8)")")"
   else
-    pass="$(edit_default HTTP_PASS '')"
+    pass=""
   fi
 
-  yellow "HTTP 代理为明文传输，建议仅用于临时测试或配合 TLS 隧道使用。"
-  if ! prompt_yes_no '确认继续安装 HTTP 代理' 'y'; then
+  yellow "${display} 为明文传输，建议仅用于临时测试或配合 TLS 隧道使用。"
+  if ! prompt_yes_no "确认继续安装 ${display}" 'y'; then
     die "用户取消"
   fi
 
@@ -5860,17 +5871,17 @@ http_proxy_install() {
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
     cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
   fi
-  render_http_proxy_config "${port}" "${user}" "${pass}" > "${XRAY_CONFIG_FILE}"
+  "${render_func}" "${port}" "${user}" "${pass}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
 
   cat > "${XRAY_ENV_FILE}" <<EOF
-PROTOCOL=http-proxy
+PROTOCOL=${protocol}
 XRAY_HOST=${server_host}
 XRAY_LISTEN_PORT=${port}
 XRAY_PUBLIC_PORT=${public_port}
 XRAY_PORT=${public_port}
-HTTP_USER=${user}
-HTTP_PASS=${pass}
+${user_key}=${user}
+${pass_key}=${pass}
 EOF
   chmod 600 "${XRAY_ENV_FILE}"
 
@@ -5880,14 +5891,14 @@ EOF
   systemctl restart xray
 
   if [ -n "${user}" ]; then
-    uri="http://$(urlencode "${user}"):$(urlencode "${pass}")@${server_host}:${public_port}"
+    uri="${scheme}://$(urlencode "${user}"):$(urlencode "${pass}")@${server_host}:${public_port}"
   else
-    uri="http://${server_host}:${public_port}"
+    uri="${scheme}://${server_host}:${public_port}"
   fi
   append_xray_uri_and_register "${uri}"
 
   echo
-  green "HTTP 代理安装完成"
+  green "${display} 安装完成"
   echo "服务状态：$(systemctl is-active xray || true)"
   echo
   echo "监听检查："
@@ -5897,76 +5908,26 @@ EOF
   echo "${uri}"
 }
 
+http_proxy_install() {
+  plain_proxy_install_common \
+    'http-proxy' \
+    'HTTP 代理' \
+    '10080' \
+    'HTTP_USER' \
+    'HTTP_PASS' \
+    'http' \
+    'render_http_proxy_config'
+}
+
 socks5_proxy_install() {
-  local detected_ip
-  local server_host
-  local port
-  local public_port
-  local user
-  local pass
-  local uri
-
-  require_root
-  require_linux
-  install_base_packages
-
-  detected_ip="$(public_ipv4)"
-  server_host="$(prompt_value '请输入连接地址，域名或公网 IP' "$(edit_target_default HOST "${detected_ip:-example.com}")")"
-  read -r port public_port < <(prompt_nat_port_pair '请输入 SOCKS5 代理 TCP 端口，必须在 NAT 面板转发 TCP' '10081')
-  ensure_port_available port
-  show_nat_port_mapping "${port}" "${public_port}" '端口'
-  user="$(prompt_value '请输入 SOCKS5 代理用户名，留空表示无认证' "$(edit_default SOCKS_USER '')")"
-  if [ -n "${user}" ]; then
-    pass="$(prompt_value '请输入 SOCKS5 代理密码，留空使用随机值' "$(edit_default SOCKS_PASS "$(random_hex 8)")")"
-  else
-    pass="$(edit_default SOCKS_PASS '')"
-  fi
-
-  yellow "SOCKS5 代理为明文传输，建议仅用于临时测试或配合 TLS 隧道使用。"
-  if ! prompt_yes_no '确认继续安装 SOCKS5 代理' 'y'; then
-    die "用户取消"
-  fi
-
-  install_xray_binary
-  mkdir -p "${XRAY_CONFIG_DIR}"
-  if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
-  fi
-  render_socks5_proxy_config "${port}" "${user}" "${pass}" > "${XRAY_CONFIG_FILE}"
-  chmod 600 "${XRAY_CONFIG_FILE}"
-
-  cat > "${XRAY_ENV_FILE}" <<EOF
-PROTOCOL=socks5-proxy
-XRAY_HOST=${server_host}
-XRAY_LISTEN_PORT=${port}
-XRAY_PUBLIC_PORT=${public_port}
-XRAY_PORT=${public_port}
-SOCKS_USER=${user}
-SOCKS_PASS=${pass}
-EOF
-  chmod 600 "${XRAY_ENV_FILE}"
-
-  write_xray_service
-  systemctl daemon-reload
-  systemctl enable --now xray
-  systemctl restart xray
-
-  if [ -n "${user}" ]; then
-    uri="socks5://$(urlencode "${user}"):$(urlencode "${pass}")@${server_host}:${public_port}"
-  else
-    uri="socks5://${server_host}:${public_port}"
-  fi
-  append_xray_uri_and_register "${uri}"
-
-  echo
-  green "SOCKS5 代理安装完成"
-  echo "服务状态：$(systemctl is-active xray || true)"
-  echo
-  echo "监听检查："
-  ss -lntp | grep "${port}" || true
-  echo
-  echo "连接信息："
-  echo "${uri}"
+  plain_proxy_install_common \
+    'socks5-proxy' \
+    'SOCKS5 代理' \
+    '10081' \
+    'SOCKS_USER' \
+    'SOCKS_PASS' \
+    'socks5' \
+    'render_socks5_proxy_config'
 }
 
 vmess_tcp_tls_install() {
