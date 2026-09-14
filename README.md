@@ -6,7 +6,7 @@
 
 - 交互式安装 HY2、Reality、VLESS、VMess、Trojan、Shadowsocks 等协议
 - 自动生成服务端配置、systemd 服务和分享链接
-- TLS 协议使用 DNS-01 手动 TXT 验证，不依赖 80/443 入站端口
+- TLS 协议支持 DNS API 自动验证（可自动续期）与手动 TXT 验证，均不依赖 80/443 入站端口
 
 ## 快速使用
 
@@ -52,7 +52,7 @@ bash install.sh
 | --- | --- |
 | NAT 面板有 UDP 转发 | Hysteria2 |
 | 只有 TCP 转发，不想管证书 | VLESS Reality |
-| 有域名，能添加 DNS TXT | VLESS / VMess / Trojan 的 TLS 类协议 |
+| 有域名，能配 DNS API 凭据 | VLESS / VMess / Trojan 的 TLS 类协议（可自动续期）|
 | 只想快速测试 TCP | VLESS / VMess / Trojan 的 TCP、WS、gRPC、HTTPUpgrade、XHTTP |
 | 需要端口范围 | VLESS / VMess dynamic port 或 mKCP dynamic port |
 | 兼容 Shadowsocks 客户端 | Shadowsocks |
@@ -137,12 +137,14 @@ nv test         # 使用 Xray 自带 test 模式验证当前总配置
 
 ## 保活
 
-`9) 其他 → 保活配置` 配置完整保活：
+保活由服务管理器原生承担，安装时即生效，不依赖 cron：
 
-- systemd unit 改为 `Restart=always` `RestartSec=3`：进程崩溃或被杀都自动重启（3 秒），开机自启。
-- 安装 cron 看门狗：每分钟检测 xray/hysteria 进程，不在则自动重启（systemd 用 `systemctl`，Alpine 用 `rc-service`）。
-- Alpine/OpenRC 无 unit 级 respawn，依赖 cron 看门狗保活。
-- 完全卸载时会自动移除看门狗脚本和 crontab 条目。
+- **systemd（Debian/Ubuntu）**：unit 内置 `Restart=always` `RestartSec=3`，进程崩溃或被杀后 3 秒自动重启，开机自启。
+- **OpenRC（Alpine）**：init 脚本使用官方 `supervisor=supervise-daemon`，进程退出后 5 秒自动拉起。`respawn_max=0` 表示永不放弃，避免连续失败后 supervisor 退出导致节点彻底失联。
+- `9) 其他 → 保活配置` 用于重写服务文件修复保活（例如服务文件被手工改坏）。
+- 完全卸载时自动移除服务文件；旧版本安装的 cron 看门狗会在运行保活配置时被清理。
+
+若 xray 配置写错导致启动即失败，`supervise-daemon` 会每 5 秒重试一次，日志按实测约 6.9 MB/天增长（单次失败约 400 B，xray 26.3.27）。这与 systemd `Restart=always` 的行为一致，把配置改对即可停止。
 
 不包含网络流量保活（防 NAT 机器回收），那超出脚本范围。
 
@@ -190,13 +192,17 @@ Dynamic port 和 mKCP dynamic port 会要求输入本机端口范围和外网端
 
 端口被占用时，脚本只显示占用信息，不会默认停用 Caddy、Nginx 或其他服务。需要停用服务时，用户必须手动输入 systemd 服务名确认。
 
-## TLS TXT 流程
+## TLS 证书验证
 
-涉及证书签发的协议会走 DNS-01 手动 TXT 验证。
+涉及证书签发的协议支持两种 DNS-01 验证方式，都不依赖 80/443 入站端口：
+
+1. **DNS API 自动验证（推荐）**：脚本调用 DNS 服务商的 API 自动写入校验记录。凭据由 acme.sh 保存在 `~/.acme.sh/account.conf`，之后 acme.sh 的定时任务可自动续期，不再需要人工操作。内置 Cloudflare、阿里云、DNSPod / 腾讯云、华为云、GoDaddy、Namecheap、AWS Route53、Gandi，也可手动输入任意 acme.sh dnsapi 插件名。插件按需从 acme.sh 官方仓库下载，所需变量名从插件自声明的 `dns_xxx_info` 解析（标注 Optional 的变量不要求填写）。建议凭据只授予该域名的 DNS 编辑权限。
+
+2. **手动 DNS TXT 验证**：不需要任何 API 凭据，但每次续期都必须人工添加 TXT 记录。每次续期的 TXT 值都是新的（由 CA 随机生成），无法预先写入。如果既没有 API 凭据、又不人工续期，证书到期后服务会中断，而且 acme.sh 的续期失败是静默的。
 
 脚本会根据证书域名自动生成 Let's Encrypt 账号邮箱。例如证书域名为 `hi.natv.cc.cd` 时，会使用 `admin@hi.natv.cc.cd`，并清理旧的无效 `example.com` 账号缓存。
 
-脚本会显示需要添加的 TXT 记录，例如：
+手动方式下脚本会显示需要添加的记录，例如：
 
 ```text
 _acme-challenge.example.com
@@ -204,7 +210,7 @@ _acme-challenge.example.com
 
 用户在 DNS 面板添加记录后，脚本会循环检测 TXT 值。检测通过后，脚本继续申请证书、写入 Xray 配置并启动服务。
 
-TLS 相关配置不做真实连通测试，因为证书签发依赖用户的 DNS TXT 操作；脚本只做 TXT 检测和后续自动配置。
+TLS 相关配置不做真实连通测试，因为证书签发依赖 DNS 状态；脚本只做验证和后续自动配置。
 
 ## 菜单
 

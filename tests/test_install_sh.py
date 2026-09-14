@@ -17,6 +17,11 @@ def read_alpine_script() -> str:
         return handle.read()
 
 
+def alpine_service_body(script: str, func: str, next_func: str) -> str:
+    start = script.index(func)
+    return script[start : script.index(next_func, start)]
+
+
 class InstallScriptTests(unittest.TestCase):
     def test_main_script_hands_off_to_alpine_wrapper(self) -> None:
         script = read_install_script()
@@ -261,7 +266,7 @@ class InstallScriptTests(unittest.TestCase):
         script = read_install_script()
 
         self.assertIn("install_acme_sh()", script)
-        self.assertIn("request_tls_cert_manual_dns()", script)
+        self.assertIn("request_tls_cert()", script)
         self.assertIn("--yes-I-know-dns-manual-mode-enough-go-ahead-please", script)
         self.assertIn("wait_for_txt_record", script)
         self.assertIn("render_vless_tcp_tls_config()", script)
@@ -284,7 +289,7 @@ class InstallScriptTests(unittest.TestCase):
         download_end = script.index("\ninstall_acme_sh()", download_start)
         download_body = script[download_start:download_end]
         install_start = script.index("install_acme_sh()")
-        install_end = script.index("\nrequest_tls_cert_manual_dns()", install_start)
+        install_end = script.index("\nrequest_tls_cert()", install_start)
         install_body = script[install_start:install_end]
 
         self.assertIn('ACME_INSTALLER_DIR="/tmp/nat-v2ray-acme"', script)
@@ -311,7 +316,7 @@ class InstallScriptTests(unittest.TestCase):
         email_end = script.index("\nport_range_span()", email_start)
         email_body = script[email_start:email_end]
         install_start = script.index("install_acme_sh()")
-        install_end = script.index("\nrequest_tls_cert_manual_dns()", install_start)
+        install_end = script.index("\nrequest_tls_cert()", install_start)
         install_body = script[install_start:install_end]
 
         self.assertIn("example.com|example.net|example.org", email_body)
@@ -333,7 +338,7 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_tls_certificate_flow_forces_letsencrypt_and_stops_without_txt(self) -> None:
         script = read_install_script()
-        cert_start = script.index("request_tls_cert_manual_dns()")
+        cert_start = script.index("request_tls_cert()")
         cert_end = script.index("\nrender_vless_tcp_tls_config()", cert_start)
         cert_body = script[cert_start:cert_end]
 
@@ -572,7 +577,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('"security": "tls"', script)
         self.assertIn('"xhttpSettings"', script)
         self.assertIn('"mode": "${xhttp_mode}"', script)
-        self.assertIn("request_tls_cert_manual_dns", script)
+        self.assertIn("request_tls_cert", script)
         self.assertIn("build_vless_xhttp_tls_uri()", script)
         self.assertIn("build_trojan_xhttp_tls_uri()", script)
         self.assertIn("security=tls&type=xhttp", script)
@@ -1055,7 +1060,7 @@ class EditConfigTests(unittest.TestCase):
     def test_reality_edit_reuses_existing_keys(self) -> None:
         script = read_install_script()
         reality_start = script.index("reality_install()")
-        reality_end = script.index("\nrequest_tls_cert_manual_dns()", reality_start)
+        reality_end = script.index("\nrequest_tls_cert()", reality_start)
         body = script[reality_start:reality_end]
         self.assertIn('${NV_EDIT_PROFILE:-}', body)
         self.assertIn("edit_env_has_key REALITY_PRIVATE_KEY", body)
@@ -1065,7 +1070,7 @@ class EditConfigTests(unittest.TestCase):
 
     def test_tls_edit_fast_path_reuses_before_acme(self) -> None:
         script = read_install_script()
-        cert_start = script.index("request_tls_cert_manual_dns()")
+        cert_start = script.index("request_tls_cert()")
         cert_end = script.index("\nrender_vless_tcp_tls_config()", cert_start)
         body = script[cert_start:cert_end]
         self.assertIn('${NV_EDIT_STAGE:-0}', body)
@@ -1147,6 +1152,215 @@ class EditConfigTests(unittest.TestCase):
             self.assertIn(proto + ")", script, "missing protocol case: " + proto)
             self.assertIn("printf '" + func + r"\n'", script, "missing function mapping: " + func)
         self.assertIn("*) return 1 ;;", script)
+
+
+class KeepaliveTests(unittest.TestCase):
+    """保活必须由服务管理器原生承担，不得回退到自研 cron 轮询。"""
+
+    def alpine_bodies(self) -> dict:
+        script = read_alpine_script()
+        return {
+            "xray": alpine_service_body(script, "write_xray_service() {", "\nwrite_hy2_service() {"),
+            "hysteria-server": alpine_service_body(script, "write_hy2_service() {", "\nsystemctl() {"),
+        }
+
+    def test_alpine_services_use_supervise_daemon(self) -> None:
+        for service, body in self.alpine_bodies().items():
+            with self.subTest(service=service):
+                self.assertIn('supervisor="supervise-daemon"', body)
+                self.assertIn('respawn_delay="5"', body)
+                # 0 表示永不放弃；否则连续失败后 supervisor 退出，节点彻底失联。
+                self.assertIn('respawn_max="0"', body)
+                # command_background 只对 start-stop-daemon 有意义，与 supervise-daemon 冲突。
+                self.assertNotIn("command_background=", body)
+
+    def test_alpine_services_keep_logging_and_pidfile(self) -> None:
+        bodies = self.alpine_bodies()
+
+        self.assertIn('pidfile="/run/xray.pid"', bodies["xray"])
+        self.assertIn('output_log="/var/log/xray/xray.log"', bodies["xray"])
+        self.assertIn('error_log="/var/log/xray/xray.log"', bodies["xray"])
+
+        self.assertIn('pidfile="/run/hysteria-server.pid"', bodies["hysteria-server"])
+        self.assertIn('output_log="/var/log/hysteria/hysteria-server.log"', bodies["hysteria-server"])
+        self.assertIn('error_log="/var/log/hysteria/hysteria-server.log"', bodies["hysteria-server"])
+
+        for service, body in bodies.items():
+            with self.subTest(service=service):
+                self.assertIn("depend() {", body)
+
+    def test_systemd_units_keep_restart_always(self) -> None:
+        script = read_install_script()
+
+        for func, next_func in (
+            ("write_xray_service() {", "\nensure_xray_profile_dirs()"),
+            ("write_hy2_service() {", "\ncreate_self_signed_cert()"),
+        ):
+            with self.subTest(func=func):
+                body = alpine_service_body(script, func, next_func)
+                self.assertIn("Restart=always", body)
+                self.assertIn("RestartSec=3", body)
+
+    def test_install_script_no_longer_installs_cron_watchdog(self) -> None:
+        script = read_install_script()
+
+        # pgrep -x 在 busybox 下匹配不到 /usr/local/bin/xray，会无条件重启运行中的进程。
+        self.assertNotIn("pgrep -x", script)
+        self.assertNotIn("<<'WATCHDOG'", script)
+        self.assertNotIn("cron 看门狗已安装", script)
+        self.assertNotIn("cron_entry", script)
+
+    def test_legacy_watchdog_is_cleaned_up_on_upgrade_and_uninstall(self) -> None:
+        script = read_install_script()
+
+        keepalive = alpine_service_body(script, "setup_keepalive() {", "\nother_tools()")
+        self.assertIn('local watchdog="/usr/local/bin/nat-v2ray-watchdog"', keepalive)
+        self.assertIn('rm -f "${watchdog}"', keepalive)
+        self.assertIn('grep -vF "${watchdog}" | crontab -', keepalive)
+
+        self.assertIn("rm -f /usr/local/bin/nat-v2ray-watchdog", script)
+
+    def test_setup_keepalive_rewrites_services_before_restart(self) -> None:
+        script = read_install_script()
+        body = alpine_service_body(script, "setup_keepalive() {", "\nother_tools()")
+
+        self.assertIn("write_xray_service", body)
+        self.assertIn("write_hy2_service", body)
+        self.assertIn("systemctl restart xray", body)
+        self.assertIn("systemctl restart hysteria-server", body)
+        self.assertIn("OpenRC 保活已生效", body)
+        self.assertIn("systemd 保活已生效", body)
+        self.assertLess(
+            body.index("write_xray_service"),
+            body.index("systemctl restart xray"),
+        )
+
+
+class CertFlowTests(unittest.TestCase):
+    """证书重载命令与复用校验。两者都必须在 Debian 与 Alpine 上都成立。"""
+
+    def test_acme_reloadcmd_defers_to_platform_helper(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("xray_reload_command()", script)
+        self.assertIn('--reloadcmd "${NV_EDIT_RELOADCMD:-$(xray_reload_command)}"', script)
+        # acme.sh 在 cron 中自行执行这条命令时没有 nv 的 systemctl 垫片，
+        # 裸 systemctl 会被尾部的 "|| true" 静默吞掉，证书永远不会被重载。
+        self.assertNotIn('--reloadcmd "${NV_EDIT_RELOADCMD:-systemctl', script)
+
+    def test_reload_command_uses_absolute_paths_with_alpine_first(self) -> None:
+        script = read_install_script()
+        body = alpine_service_body(script, "xray_reload_command() {", "\nbackup_file() {")
+
+        self.assertIn("/sbin/rc-service", body)
+        self.assertIn("/usr/sbin/rc-service", body)
+        self.assertIn("/bin/systemctl", body)
+        self.assertIn("/usr/bin/systemctl", body)
+        # 先判平台，避免同时装了 openrc 的 Debian 被误判
+        self.assertLess(
+            body.index("/etc/alpine-release"),
+            body.index("/bin/systemctl"),
+        )
+
+    def test_certificate_reuse_checks_expiry_on_both_paths(self) -> None:
+        script = read_install_script()
+
+        # 编辑态与普通安装路径都必须拒绝过期证书，否则会把过期证书写进新配置且不报错。
+        self.assertEqual(script.count("openssl x509 -checkend 0 -noout"), 2)
+
+    def test_backup_file_avoids_same_second_overwrite(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("backup_file() {", script)
+        self.assertIn('while [ -e "${dest}" ]', script)
+        # 一次性时间戳写法必须消失：同一秒内重复备份同一文件会互相覆盖。
+        self.assertNotIn(".bak.$(date", script)
+        self.assertGreaterEqual(script.count('backup_file "'), 39)
+
+
+class DnsApiCertTests(unittest.TestCase):
+    """证书颁发支持 DNS API 自动验证（复用 acme.sh 官方 dnsapi 插件）。"""
+
+    def test_entrypoint_dispatches_both_challenge_modes(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("request_tls_cert() {", script)
+        self.assertNotIn("request_tls_cert_manual_dns", script)
+
+        body = alpine_service_body(script, "request_tls_cert() {", "\nrender_vless_tcp_tls_config()")
+        self.assertIn('mode="$(select_cert_challenge_mode "${domain}")"', body)
+        self.assertIn('if [ "${mode}" != "manual" ]; then', body)
+        self.assertIn("issue_cert_via_dns_api", body)
+        # 手动 TXT 流程必须保留，不能因新增分支而丢失。
+        self.assertIn("--yes-I-know-dns-manual-mode-enough-go-ahead-please", body)
+        self.assertIn("wait_for_txt_record", body)
+        self.assertIn("extract_acme_txt_value", body)
+
+    def test_all_tls_protocols_use_the_renamed_entrypoint(self) -> None:
+        script = read_install_script()
+
+        # 12 个 TLS 协议均通过该入口取证，改名后不能漏掉任何一个。
+        self.assertEqual(script.count('request_tls_cert "${domain}"'), 12)
+
+    def test_dnsapi_plugin_is_downloaded_on_demand(self) -> None:
+        script = read_install_script()
+        body = alpine_service_body(script, "ensure_acme_dnsapi() {", "\nacme_dnsapi_var_block() {")
+
+        # acme.sh v3.1.5 不自带也不会自动下载 dnsapi 插件，必须由脚本补。
+        self.assertIn("acme_dnsapi_path", body)
+        self.assertIn('${ACME_DNSAPI_URL}/${plugin}.sh', body)
+        self.assertIn("[ -s \"${path}\" ]", body)
+
+    def test_var_parsing_prefers_optionsalt_and_skips_optional(self) -> None:
+        script = read_install_script()
+        block = alpine_service_body(script, "acme_dnsapi_var_block() {", "\nacme_dnsapi_required_vars() {")
+
+        self.assertIn("/^Options:/ || /^OptionsAlt:/ {grab = 0}", block)
+        # 插件里标注 Optional 的变量不是必需（如 dns_cf 的 CF_Zone_ID）。
+        self.assertIn("$0 !~ /[Oo]ptional/", block)
+
+        required = alpine_service_body(script, "acme_dnsapi_required_vars() {", "\nacme_saved_credential() {")
+        self.assertIn("'OptionsAlt:'", required)
+        self.assertLess(
+            required.index("'Options:'"),
+            required.index("'OptionsAlt:'"),
+        )
+
+    def test_credentials_are_reused_from_acme_account_conf(self) -> None:
+        script = read_install_script()
+        saved = alpine_service_body(script, "acme_saved_credential() {", "\ndns_api_credentials_ready() {")
+        self.assertIn("SAVED_${key}", saved)
+
+        ready = alpine_service_body(script, "dns_api_credentials_ready() {", "\ndns_api_saved_provider() {")
+        # 任一变量组完整即视为可用。
+        self.assertIn("for group in 'Options:' 'OptionsAlt:'", ready)
+        self.assertIn("dns_api_vars_saved", ready)
+
+    def test_prompts_go_to_stderr_to_keep_captured_values_clean(self) -> None:
+        script = read_install_script()
+
+        # 这些函数的 stdout 会被 $(...) 捕获当作返回值，提示色输出必须走 stderr。
+        for func, next_func in (
+            ("select_dns_api_provider() {", "\nprompt_dns_api_credentials() {"),
+            ("prompt_dns_api_credentials() {", "\nissue_cert_via_dns_api() {"),
+            ("select_cert_challenge_mode() {", "\nconfigured_acme_email() {"),
+        ):
+            body = alpine_service_body(script, func, next_func)
+            for line in body.splitlines():
+                stripped = line.strip()
+                if not stripped.startswith(("green ", "yellow ", "blue ")):
+                    continue
+                with self.subTest(func=func, line=stripped):
+                    self.assertIn(">&2", stripped)
+
+    def test_dns_api_issue_uses_platform_reload_and_installs_cert(self) -> None:
+        script = read_install_script()
+        body = alpine_service_body(script, "issue_cert_via_dns_api() {", "\nselect_cert_challenge_mode() {")
+
+        self.assertIn('--dns "${plugin}"', body)
+        self.assertIn('--dnssleep "${ACME_DNS_SLEEP:-60}"', body)
+        self.assertIn("--install-cert", body)
+        self.assertIn("$(xray_reload_command)", body)
 
 
 if __name__ == "__main__":

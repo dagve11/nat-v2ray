@@ -25,12 +25,54 @@ ACME_SH="${HOME}/.acme.sh/acme.sh"
 ACME_LE_ACCOUNT_DIR="${HOME}/.acme.sh/ca/acme-v02.api.letsencrypt.org/directory"
 ACME_INSTALLER_DIR="/tmp/nat-v2ray-acme"
 ACME_INSTALLER="${ACME_INSTALLER_DIR}/acme.sh"
+# acme.sh 不自带 dnsapi 插件也不会自动下载，需要按需取回官方插件文件。
+ACME_DNSAPI_URL="https://raw.githubusercontent.com/acmesh-official/acme.sh/master/dnsapi"
+# DNS API 模式写入校验记录后等待 DNS 传播的秒数。
+ACME_DNS_SLEEP="60"
 
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 blue() { printf '\033[34m%s\033[0m\n' "$*"; }
 die() { red "错误：$*"; exit 1; }
+
+# acme.sh 会把这条命令持久化，并在后续 cron 续期时脱离 nv 环境自行执行，
+# 因此必须使用绝对路径，不能依赖 PATH 中的 systemctl/rc-service。
+xray_reload_command() {
+  local candidate
+
+  if [ -f /etc/alpine-release ]; then
+    for candidate in /sbin/rc-service /usr/sbin/rc-service; do
+      if [ -x "${candidate}" ]; then
+        printf '%s xray restart >/dev/null 2>&1\n' "${candidate}"
+        return 0
+      fi
+    done
+  fi
+  for candidate in /bin/systemctl /usr/bin/systemctl; do
+    if [ -x "${candidate}" ]; then
+      printf '%s restart xray >/dev/null 2>&1\n' "${candidate}"
+      return 0
+    fi
+  done
+  printf '%s\n' 'true'
+}
+
+# 备份为带时间戳的 .bak 文件；同一秒内重复备份同一文件时追加序号，避免覆盖上一次备份。
+backup_file() {
+  local src="$1"
+  local stamp
+  local dest
+  local seq=0
+
+  stamp="$(date +%Y%m%d%H%M%S)"
+  dest="${src}.bak.${stamp}"
+  while [ -e "${dest}" ]; do
+    seq=$((seq + 1))
+    dest="${src}.bak.${stamp}.${seq}"
+  done
+  cp -a "${src}" "${dest}"
+}
 
 handoff_to_alpine_installer() {
   local alpine_installer="/tmp/nat-v2ray-install-alpine.sh"
@@ -236,7 +278,7 @@ clear_invalid_letsencrypt_account() {
   yellow "清理无效的 Let's Encrypt 账号缓存：${email}"
   rm -rf "${ACME_LE_ACCOUNT_DIR}"
   if [ -f "${account_conf}" ]; then
-    cp -a "${account_conf}" "${account_conf}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+    backup_file "${account_conf}" 2>/dev/null || true
     sed -i '/^ACCOUNT_EMAIL=/d' "${account_conf}" 2>/dev/null || true
   fi
 }
@@ -1401,7 +1443,7 @@ hy2_install() {
   create_self_signed_cert "${server_host}"
 
   if [ -f "${HY2_CONFIG_FILE}" ]; then
-    cp -a "${HY2_CONFIG_FILE}" "${HY2_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${HY2_CONFIG_FILE}"
   fi
 
   render_hy2_config "${port}" "${HY2_CERT_FILE}" "${HY2_KEY_FILE}" "${auth_password}" "${obfs_password}" "${masquerade_url}" > "${HY2_CONFIG_FILE}"
@@ -1490,7 +1532,7 @@ reality_install() {
 
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_reality_config "${port}" "${uuid}" "${private_key}" "${short_id}" "${server_name}" "${dest}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -1606,6 +1648,248 @@ install_acme_sh() {
   "${ACME_SH}" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
 }
 
+# --- DNS API 自动验证（复用 acme.sh 官方 dnsapi 插件）---
+
+acme_dnsapi_path() {
+  printf '%s/dnsapi/%s.sh\n' "$(dirname "${ACME_SH}")" "$1"
+}
+
+acme_dnsapi_providers() {
+  cat <<'EOF'
+dns_cf|Cloudflare
+dns_ali|阿里云 DNS
+dns_dp|DNSPod / 腾讯云
+dns_tencent|腾讯云 DNSPod（新版）
+dns_huaweicloud|华为云 DNS
+dns_gd|GoDaddy
+dns_namecheap|Namecheap
+dns_aws|AWS Route53
+dns_gandi_livedns|Gandi LiveDNS
+EOF
+}
+
+ensure_acme_dnsapi() {
+  local plugin="$1"
+  local path
+  local dir
+
+  path="$(acme_dnsapi_path "${plugin}")"
+  if [ -s "${path}" ]; then
+    return 0
+  fi
+  dir="$(dirname "${path}")"
+  mkdir -p "${dir}"
+  yellow "下载 acme.sh DNS API 插件：${plugin}" >&2
+  curl -fsSL "${ACME_DNSAPI_URL}/${plugin}.sh" -o "${path}" || die "下载 ${plugin} 插件失败（需要能访问 GitHub）"
+  chmod 700 "${path}" 2>/dev/null || true
+}
+
+# 从插件自声明的 dns_xxx_info 里取出指定段落（Options: 或 OptionsAlt:）的变量名。
+acme_dnsapi_var_block() {
+  local plugin="$1"
+  local section="$2"
+  local path
+
+  path="$(acme_dnsapi_path "${plugin}")"
+  [ -s "${path}" ] || return 0
+  sed -n "/^${plugin}_info=/,/^'$/p" "${path}" 2>/dev/null \
+    | awk -v want="${section}" '
+        $0 == want {grab = 1; next}
+        /^Options:/ || /^OptionsAlt:/ {grab = 0}
+        grab && /^[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]/ && $0 !~ /[Oo]ptional/ {print $1}
+      ' \
+    || true
+}
+
+# 优先取 OptionsAlt：acme.sh 把更新、权限更细的认证方式放在这里（如 dns_cf 的
+# CF_Token 属于 OptionsAlt，而 Options 里是已不推荐的 Global API Key）。
+acme_dnsapi_required_vars() {
+  local plugin="$1"
+  local primary
+  local alt
+
+  primary="$(acme_dnsapi_var_block "${plugin}" 'Options:')"
+  alt="$(acme_dnsapi_var_block "${plugin}" 'OptionsAlt:')"
+  if [ -n "${alt}" ]; then
+    printf '%s\n' "${alt}"
+  else
+    printf '%s\n' "${primary}"
+  fi
+}
+
+acme_saved_credential() {
+  local key="$1"
+  local conf="${HOME}/.acme.sh/account.conf"
+
+  [ -f "${conf}" ] || return 0
+  grep -E "^SAVED_${key}=" "${conf}" 2>/dev/null | tail -n 1 \
+    | sed -e "s/^SAVED_${key}=//" -e "s/^'//" -e "s/'$//" -e 's/^"//' -e 's/"$//' \
+    || true
+}
+
+# 仅做检查，不触发插件下载；插件未就绪时视为无凭据。
+dns_api_credentials_ready() {
+  local plugin="$1"
+  local vars
+  local group
+
+  [ -s "$(acme_dnsapi_path "${plugin}")" ] || return 1
+  # 任一变量组（Options / OptionsAlt）完整即视为可用。
+  for group in 'Options:' 'OptionsAlt:'; do
+    vars="$(acme_dnsapi_var_block "${plugin}" "${group}")"
+    [ -n "${vars}" ] || continue
+    if dns_api_vars_saved ${vars}; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+dns_api_vars_saved() {
+  local var
+
+  for var in "$@"; do
+    [ -n "$(acme_saved_credential "${var}")" ] || return 1
+  done
+  return 0
+}
+
+dns_api_saved_provider() {
+  local row
+  local plugin
+
+  while IFS= read -r row; do
+    plugin="${row%%|*}"
+    if dns_api_credentials_ready "${plugin}"; then
+      printf '%s\n' "${plugin}"
+      return 0
+    fi
+  done < <(acme_dnsapi_providers)
+  return 1
+}
+
+select_dns_api_provider() {
+  local rows=()
+  local row
+  local plugin
+  local choice
+  local index
+
+  mapfile -t rows < <(acme_dnsapi_providers)
+
+  plugin="$(dns_api_saved_provider || true)"
+  if [ -n "${plugin}" ]; then
+    green "复用已保存的 ${plugin} 凭据" >&2
+    printf '%s\n' "${plugin}"
+    return 0
+  fi
+
+  echo "可用 DNS 提供商（凭据只需该域名的 DNS 编辑权限）：" >&2
+  index=1
+  for row in "${rows[@]}"; do
+    printf '  %d) %s\n' "${index}" "${row##*|}" >&2
+    index=$((index + 1))
+  done
+  printf '  %d) 其他（手动输入 acme.sh 插件名）\n' "${index}" >&2
+
+  while true; do
+    read_input choice '请选择 DNS 提供商 [1]: '
+    choice="${choice:-1}"
+    if [ "${choice}" -ge 1 ] 2>/dev/null && [ "${choice}" -le "${#rows[@]}" ]; then
+      plugin="${rows[$((choice - 1))]%%|*}"
+      break
+    fi
+    if [ "${choice}" = "${index}" ]; then
+      plugin="$(prompt_value '请输入 acme.sh 的 DNS API 插件名（例如 dns_cf）' '')"
+      if [ -n "${plugin}" ]; then
+        break
+      fi
+    fi
+    yellow "无效选项" >&2
+  done
+
+  ensure_acme_dnsapi "${plugin}"
+  [ -n "$(acme_dnsapi_required_vars "${plugin}")" ] || die "无法从 ${plugin} 插件解析出所需变量，请确认插件名是否正确"
+  printf '%s\n' "${plugin}"
+}
+
+prompt_dns_api_credentials() {
+  local plugin="$1"
+  local vars
+  local var
+  local value
+
+  vars="$(acme_dnsapi_required_vars "${plugin}")"
+  [ -n "${vars}" ] || die "无法从 ${plugin} 插件解析出所需变量"
+  for var in ${vars}; do
+    value="$(acme_saved_credential "${var}")"
+    if [ -n "${value}" ]; then
+      green "复用已保存的 ${var}" >&2
+    else
+      value="$(prompt_value "请输入 ${var}（将保存到 acme.sh 配置供自动续期使用）" '')"
+      [ -n "${value}" ] || die "缺少 ${var}，无法使用 DNS API 验证"
+    fi
+    export "${var}=${value}"
+  done
+}
+
+issue_cert_via_dns_api() {
+  local domain="$1"
+  local plugin="$2"
+  local key_file="$3"
+  local fullchain_file="$4"
+  local output
+  local rc
+
+  set +e
+  output="$("${ACME_SH}" --server letsencrypt --issue --dns "${plugin}" \
+    --dnssleep "${ACME_DNS_SLEEP:-60}" -d "${domain}" 2>&1)"
+  rc=$?
+  set -e
+  printf '%s\n' "${output}"
+  if [ "${rc}" -ne 0 ]; then
+    die "DNS API 签发失败（插件 ${plugin}）。请确认凭据对该域名有 DNS 编辑权限，且本机能访问服务商 API。"
+  fi
+
+  "${ACME_SH}" --install-cert -d "${domain}" \
+    --key-file "${key_file}" \
+    --fullchain-file "${fullchain_file}" \
+    --reloadcmd "${NV_EDIT_RELOADCMD:-$(xray_reload_command)}" \
+    || die "安装证书失败"
+}
+
+select_cert_challenge_mode() {
+  local domain="$1"
+  local choice
+  local plugin
+
+  # 编辑态不做交互：已有凭据才用 DNS API，否则沿用原有手动流程。
+  if [ "${NV_EDIT_STAGE:-0}" = "1" ]; then
+    plugin="$(dns_api_saved_provider || true)"
+    if [ -n "${plugin}" ]; then
+      printf '%s\n' "${plugin}"
+    else
+      printf '%s\n' 'manual'
+    fi
+    return 0
+  fi
+
+  cat <<EOF >&2
+${domain} 的证书验证方式：
+  1) DNS API 自动验证（推荐）：由脚本调用 DNS 服务商 API 自动写入校验记录，
+     之后 acme.sh 定时任务可自动续期，不再需要人工操作。
+  2) 手动 DNS TXT 验证：不需要 API 凭据，但每次续期都要人工添加 TXT 记录，
+     证书到期后服务会中断。
+EOF
+  read_input choice '请选择 [1]: '
+  choice="${choice:-1}"
+  if [ "${choice}" = "2" ]; then
+    printf '%s\n' 'manual'
+    return 0
+  fi
+  select_dns_api_provider
+}
+
 configured_acme_email() {
   local conf
   local line
@@ -1666,11 +1950,12 @@ extract_acme_txt_value() {
     -e 's/.*TXT value:[[:space:]]*\([^[:space:]]*\).*/\1/p' | tail -1
 }
 
-request_tls_cert_manual_dns() {
+request_tls_cert() {
   local domain="$1"
   local cert_dir
   local key_file
   local fullchain_file
+  local mode
   local issue_output
   local renew_output
   local txt_value
@@ -1700,13 +1985,27 @@ request_tls_cert_manual_dns() {
   mkdir -p "${cert_dir}"
   chmod 700 "${cert_dir}"
 
-  if [ -s "${key_file}" ] && [ -s "${fullchain_file}" ]; then
+  # 复用前必须确认证书未过期，否则会把过期证书写进新配置且不报错。
+  if [ -s "${key_file}" ] && [ -s "${fullchain_file}" ] \
+    && openssl x509 -checkend 0 -noout -in "${fullchain_file}" >/dev/null 2>&1; then
     if prompt_yes_no "检测到 ${domain} 已有证书，是否直接复用" 'y'; then
       printf '%s %s\n' "${fullchain_file}" "${key_file}"
       return 0
     fi
   fi
 
+  # DNS API 模式：由脚本自动写入校验记录，acme.sh 定时任务可自动续期。
+  mode="$(select_cert_challenge_mode "${domain}")"
+  if [ "${mode}" != "manual" ]; then
+    prompt_dns_api_credentials "${mode}"
+    issue_cert_via_dns_api "${domain}" "${mode}" "${key_file}" "${fullchain_file}"
+    chmod 600 "${key_file}"
+    chmod 644 "${fullchain_file}"
+    printf '%s %s\n' "${fullchain_file}" "${key_file}"
+    return 0
+  fi
+
+  # 以下为手动 DNS TXT 流程。
   set +e
   issue_output="$("${ACME_SH}" --server letsencrypt --issue --dns -d "${domain}" --yes-I-know-dns-manual-mode-enough-go-ahead-please 2>&1)"
   rc=$?
@@ -1739,7 +2038,7 @@ request_tls_cert_manual_dns() {
   "${ACME_SH}" --install-cert -d "${domain}" \
     --key-file "${key_file}" \
     --fullchain-file "${fullchain_file}" \
-    --reloadcmd "${NV_EDIT_RELOADCMD:-systemctl restart xray >/dev/null 2>&1 || true}"
+    --reloadcmd "${NV_EDIT_RELOADCMD:-$(xray_reload_command)}"
 
   chmod 600 "${key_file}"
   chmod 644 "${fullchain_file}"
@@ -3850,7 +4149,7 @@ vless_tcp_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vless_tcp_config "${port}" "${uuid}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -3915,7 +4214,7 @@ vless_ws_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vless_ws_config "${port}" "${uuid}" "${ws_path}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -3982,7 +4281,7 @@ vless_httpupgrade_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vless_httpupgrade_config "${port}" "${uuid}" "${http_path}" "${host_header}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4047,7 +4346,7 @@ vless_grpc_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vless_grpc_config "${port}" "${uuid}" "${service_name}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4113,7 +4412,7 @@ vless_xhttp_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vless_xhttp_config "${port}" "${uuid}" "${xhttp_path}" "${xhttp_mode}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4183,14 +4482,14 @@ vless_xhttp_tls_install() {
   fi
 
   install_xray_binary
-  request_tls_cert_manual_dns "${domain}"
+  request_tls_cert "${domain}"
   cert_dir="$(cert_dir_for_domain "${domain}")"
   cert_file="${cert_dir}/fullchain.cer"
   key_file="${cert_dir}/private.key"
 
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vless_xhttp_tls_config "${port}" "${uuid}" "${xhttp_path}" "${xhttp_mode}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4255,7 +4554,7 @@ vless_tcp_dynamic_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vless_tcp_dynamic_config "${port_range}" "${uuid}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4318,7 +4617,7 @@ vless_ws_dynamic_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vless_ws_dynamic_config "${port_range}" "${uuid}" "${ws_path}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4384,7 +4683,7 @@ vless_mkcp_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vless_mkcp_config "${port}" "${uuid}" "${header_type}" "${seed}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4452,7 +4751,7 @@ vless_mkcp_dynamic_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vless_mkcp_dynamic_config "${port_range}" "${uuid}" "${header_type}" "${seed}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4517,14 +4816,14 @@ vless_tcp_tls_install() {
   fi
 
   install_xray_binary
-  request_tls_cert_manual_dns "${domain}"
+  request_tls_cert "${domain}"
   cert_dir="$(cert_dir_for_domain "${domain}")"
   cert_file="${cert_dir}/fullchain.cer"
   key_file="${cert_dir}/private.key"
 
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vless_tcp_tls_config "${port}" "${uuid}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4590,14 +4889,14 @@ vless_ws_tls_install() {
   fi
 
   install_xray_binary
-  request_tls_cert_manual_dns "${domain}"
+  request_tls_cert "${domain}"
   cert_dir="$(cert_dir_for_domain "${domain}")"
   cert_file="${cert_dir}/fullchain.cer"
   key_file="${cert_dir}/private.key"
 
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vless_ws_tls_config "${port}" "${uuid}" "${ws_path}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4662,14 +4961,14 @@ trojan_tls_install() {
   fi
 
   install_xray_binary
-  request_tls_cert_manual_dns "${domain}"
+  request_tls_cert "${domain}"
   cert_dir="$(cert_dir_for_domain "${domain}")"
   cert_file="${cert_dir}/fullchain.cer"
   key_file="${cert_dir}/private.key"
 
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_trojan_tls_config "${port}" "${password}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4730,7 +5029,7 @@ vmess_tcp_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vmess_tcp_config "${port}" "${uuid}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4792,7 +5091,7 @@ vmess_ws_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vmess_ws_config "${port}" "${uuid}" "${ws_path}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4856,7 +5155,7 @@ vmess_httpupgrade_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vmess_httpupgrade_config "${port}" "${uuid}" "${http_path}" "${host_header}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4921,7 +5220,7 @@ vmess_grpc_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vmess_grpc_config "${port}" "${uuid}" "${service_name}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -4987,7 +5286,7 @@ vmess_xhttp_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vmess_xhttp_config "${port}" "${uuid}" "${xhttp_path}" "${xhttp_mode}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -5057,14 +5356,14 @@ vmess_xhttp_tls_install() {
   fi
 
   install_xray_binary
-  request_tls_cert_manual_dns "${domain}"
+  request_tls_cert "${domain}"
   cert_dir="$(cert_dir_for_domain "${domain}")"
   cert_file="${cert_dir}/fullchain.cer"
   key_file="${cert_dir}/private.key"
 
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vmess_xhttp_tls_config "${port}" "${uuid}" "${xhttp_path}" "${xhttp_mode}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -5129,7 +5428,7 @@ vmess_tcp_dynamic_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vmess_tcp_dynamic_config "${port_range}" "${uuid}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -5192,7 +5491,7 @@ vmess_ws_dynamic_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vmess_ws_dynamic_config "${port_range}" "${uuid}" "${ws_path}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -5258,7 +5557,7 @@ vmess_mkcp_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vmess_mkcp_config "${port}" "${uuid}" "${header_type}" "${seed}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -5326,7 +5625,7 @@ vmess_mkcp_dynamic_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vmess_mkcp_dynamic_config "${port_range}" "${uuid}" "${header_type}" "${seed}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -5388,7 +5687,7 @@ trojan_tcp_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_trojan_tcp_config "${port}" "${password}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -5453,7 +5752,7 @@ trojan_ws_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_trojan_ws_config "${port}" "${password}" "${ws_path}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -5520,7 +5819,7 @@ trojan_httpupgrade_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_trojan_httpupgrade_config "${port}" "${password}" "${http_path}" "${host_header}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -5585,7 +5884,7 @@ trojan_grpc_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_trojan_grpc_config "${port}" "${password}" "${service_name}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -5651,7 +5950,7 @@ trojan_xhttp_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_trojan_xhttp_config "${port}" "${password}" "${xhttp_path}" "${xhttp_mode}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -5721,14 +6020,14 @@ trojan_xhttp_tls_install() {
   fi
 
   install_xray_binary
-  request_tls_cert_manual_dns "${domain}"
+  request_tls_cert "${domain}"
   cert_dir="$(cert_dir_for_domain "${domain}")"
   cert_file="${cert_dir}/fullchain.cer"
   key_file="${cert_dir}/private.key"
 
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_trojan_xhttp_tls_config "${port}" "${password}" "${xhttp_path}" "${xhttp_mode}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -5796,7 +6095,7 @@ shadowsocks_install() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_shadowsocks_config "${port}" "${method}" "${password}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -5872,7 +6171,7 @@ plain_proxy_install_common() {
   install_xray_binary
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   "${render_func}" "${port}" "${user}" "${pass}" "${server_host}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -5963,14 +6262,14 @@ vmess_tcp_tls_install() {
   fi
 
   install_xray_binary
-  request_tls_cert_manual_dns "${domain}"
+  request_tls_cert "${domain}"
   cert_dir="$(cert_dir_for_domain "${domain}")"
   cert_file="${cert_dir}/fullchain.cer"
   key_file="${cert_dir}/private.key"
 
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vmess_tcp_tls_config "${port}" "${uuid}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -6036,14 +6335,14 @@ vmess_ws_tls_install() {
   fi
 
   install_xray_binary
-  request_tls_cert_manual_dns "${domain}"
+  request_tls_cert "${domain}"
   cert_dir="$(cert_dir_for_domain "${domain}")"
   cert_file="${cert_dir}/fullchain.cer"
   key_file="${cert_dir}/private.key"
 
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vmess_ws_tls_config "${port}" "${uuid}" "${ws_path}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -6110,14 +6409,14 @@ vmess_grpc_tls_install() {
   fi
 
   install_xray_binary
-  request_tls_cert_manual_dns "${domain}"
+  request_tls_cert "${domain}"
   cert_dir="$(cert_dir_for_domain "${domain}")"
   cert_file="${cert_dir}/fullchain.cer"
   key_file="${cert_dir}/private.key"
 
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vmess_grpc_tls_config "${port}" "${uuid}" "${service_name}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -6184,14 +6483,14 @@ vless_grpc_tls_install() {
   fi
 
   install_xray_binary
-  request_tls_cert_manual_dns "${domain}"
+  request_tls_cert "${domain}"
   cert_dir="$(cert_dir_for_domain "${domain}")"
   cert_file="${cert_dir}/fullchain.cer"
   key_file="${cert_dir}/private.key"
 
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_vless_grpc_tls_config "${port}" "${uuid}" "${service_name}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -6258,14 +6557,14 @@ trojan_ws_tls_install() {
   fi
 
   install_xray_binary
-  request_tls_cert_manual_dns "${domain}"
+  request_tls_cert "${domain}"
   cert_dir="$(cert_dir_for_domain "${domain}")"
   cert_file="${cert_dir}/fullchain.cer"
   key_file="${cert_dir}/private.key"
 
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_trojan_ws_tls_config "${port}" "${password}" "${ws_path}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -6332,14 +6631,14 @@ trojan_grpc_tls_install() {
   fi
 
   install_xray_binary
-  request_tls_cert_manual_dns "${domain}"
+  request_tls_cert "${domain}"
   cert_dir="$(cert_dir_for_domain "${domain}")"
   cert_file="${cert_dir}/fullchain.cer"
   key_file="${cert_dir}/private.key"
 
   mkdir -p "${XRAY_CONFIG_DIR}"
   if [ -f "${XRAY_CONFIG_FILE}" ]; then
-    cp -a "${XRAY_CONFIG_FILE}" "${XRAY_CONFIG_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file "${XRAY_CONFIG_FILE}"
   fi
   render_trojan_grpc_tls_config "${port}" "${password}" "${service_name}" "${cert_file}" "${key_file}" > "${XRAY_CONFIG_FILE}"
   chmod 600 "${XRAY_CONFIG_FILE}"
@@ -7256,7 +7555,6 @@ EOF
 
 setup_keepalive() {
   local watchdog="/usr/local/bin/nat-v2ray-watchdog"
-  local cron_entry="* * * * * ${watchdog}"
 
   require_root
   require_linux
@@ -7264,45 +7562,27 @@ setup_keepalive() {
   echo
   blue "配置保活："
 
+  write_xray_service
+  write_hy2_service
+  systemctl daemon-reload >/dev/null 2>&1 || true
+
   if [ -f /etc/alpine-release ]; then
-    yellow "Alpine/OpenRC：依赖 cron 看门狗（每分钟检测进程，down 自动 rc-service 重启）"
+    green "OpenRC 保活已生效：supervisor=supervise-daemon（进程退出后 5 秒自动重启）"
   else
-    write_xray_service
-    write_hy2_service
-    systemctl daemon-reload >/dev/null 2>&1 || true
-    green "systemd unit 已更新：Restart=always RestartSec=3（崩溃/被杀均自动重启）"
-    systemctl restart xray >/dev/null 2>&1 || true
-    systemctl restart hysteria-server >/dev/null 2>&1 || true
+    green "systemd 保活已生效：Restart=always RestartSec=3（崩溃/被杀均自动重启）"
   fi
 
-  cat > "${watchdog}" <<'WATCHDOG'
-#!/bin/sh
-# nat-v2ray keepalive watchdog: 进程不在则重启（systemd 用 systemctl，Alpine 用 rc-service）
-restart_service() {
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl restart "$1" 2>/dev/null
-  elif command -v rc-service >/dev/null 2>&1; then
-    rc-service "$1" restart 2>/dev/null
-  fi
-}
-if [ -x /usr/local/bin/xray ] && command -v pgrep >/dev/null 2>&1 && ! pgrep -x xray >/dev/null 2>&1; then
-  restart_service xray
-fi
-if [ -x /usr/local/bin/hysteria ] && command -v pgrep >/dev/null 2>&1 && ! pgrep -x hysteria >/dev/null 2>&1; then
-  restart_service hysteria-server
-fi
-WATCHDOG
-  chmod 0755 "${watchdog}"
+  systemctl restart xray >/dev/null 2>&1 || true
+  systemctl restart hysteria-server >/dev/null 2>&1 || true
 
-  if command -v crontab >/dev/null 2>&1; then
-    if ! crontab -l 2>/dev/null | grep -qF "${watchdog}"; then
-      (crontab -l 2>/dev/null || true; printf '%s\n' "${cron_entry}") | crontab -
+  # 旧版用 cron 看门狗补 OpenRC 缺失的 respawn。现在由 supervise-daemon 原生承担，
+  # 两套保活并存会重复重启，因此升级时清理旧残留。
+  if [ -f "${watchdog}" ] || { command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -qF "${watchdog}"; }; then
+    rm -f "${watchdog}"
+    if command -v crontab >/dev/null 2>&1; then
+      crontab -l 2>/dev/null | grep -vF "${watchdog}" | crontab - 2>/dev/null || true
     fi
-    green "cron 看门狗已安装：每分钟检测 xray/hysteria 进程，down 自动重启"
-    echo "看门狗脚本：${watchdog}"
-    echo "crontab：${cron_entry}"
-  else
-    yellow "未找到 crontab，看门狗未安装（systemd Restart=always 仍生效）"
+    yellow "已移除旧版 cron 看门狗（改用 supervise-daemon 原生保活）"
   fi
 
   green "保活配置完成"
