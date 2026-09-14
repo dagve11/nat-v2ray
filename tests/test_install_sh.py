@@ -1,4 +1,7 @@
 import os
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 
@@ -20,6 +23,33 @@ def read_alpine_script() -> str:
 def alpine_service_body(script: str, func: str, next_func: str) -> str:
     start = script.index(func)
     return script[start : script.index(next_func, start)]
+
+
+def run_install_functions(home: str, body: str) -> subprocess.CompletedProcess:
+    """在指定 HOME 下加载 install.sh 并执行给定语句，用于函数级实跑验证。"""
+    script = (
+        "set -Eeuo pipefail\n"
+        f'HOME="{home}"\n'
+        "export HOME\n"
+        f'NAT_V2RAY_LIB_ONLY=1 . "{INSTALL_SH}"\n'
+        f"{body}\n"
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+
+
+def read_text(path: str) -> str:
+    with open(path, "r", encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
+def write_text(path: str, content: str) -> None:
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(content)
 
 
 class InstallScriptTests(unittest.TestCase):
@@ -1361,6 +1391,215 @@ class DnsApiCertTests(unittest.TestCase):
         self.assertIn('--dnssleep "${ACME_DNS_SLEEP:-60}"', body)
         self.assertIn("--install-cert", body)
         self.assertIn("$(xray_reload_command)", body)
+
+
+class DnsApiCredentialManagerTests(unittest.TestCase):
+    """DNS API 凭据管理入口：查看 / 新增更新 / 删除。"""
+
+    def test_entry_is_wired_into_other_tools_and_nv_command(self) -> None:
+        script = read_install_script()
+
+        self.assertIn("6) DNS API 凭据管理", script)
+        self.assertIn("read_input choice '请选择 [0-6]: '", script)
+
+        other = alpine_service_body(script, "other_tools() {", "\ndependency_present() {")
+        self.assertIn("6) manage_dns_api_credentials ;;", other)
+
+        main_start = script.index("\nmain()") + 1
+        main_end = script.index('if [ "${NAT_V2RAY_LIB_ONLY:-0}" != "1"', main_start)
+        main_body = script[main_start:main_end]
+        self.assertIn("dns|dnsapi|dns-api)", main_body)
+        self.assertIn("manage_dns_api_credentials", main_body)
+
+    def test_provider_selection_is_split_so_management_can_force_reselect(self) -> None:
+        script = read_install_script()
+        choose = alpine_service_body(
+            script, "choose_dns_api_provider() {", "\nselect_dns_api_provider() {"
+        )
+        select = alpine_service_body(
+            script, "select_dns_api_provider() {", "\nprompt_dns_api_credentials() {"
+        )
+
+        # 凭据管理必须能重新选择提供商，“复用已保存凭据”的短路只能留在 select 里。
+        self.assertNotIn("dns_api_saved_provider", choose)
+        self.assertIn("ensure_acme_dnsapi", choose)
+        self.assertIn("dns_api_saved_provider", select)
+        self.assertIn("choose_dns_api_provider", select)
+
+    def test_write_format_matches_acme_sh_storage(self) -> None:
+        script = read_install_script()
+        body = alpine_service_body(
+            script, "dns_api_set_credential() {", "\ndns_api_clear_credential() {"
+        )
+
+        # 与 acme.sh 的 _save_conf/_setopt 一致：SAVED_<变量>='<值>'，单引号包裹。
+        self.assertIn("-v q=\"'\"", body)
+        self.assertIn('ENVIRON["NV_CRED_VALUE"]', body)
+        self.assertIn('"^" key " *=" {next}', body)
+        # acme.sh 保存后会调 _clearaccountconf 清掉无前缀的旧键，这里同样处理。
+        self.assertIn('"^" bare " *=" {next}', body)
+        # 值不能改用 -v 传入，否则值里的反斜杠会被 awk 当转义序列处理。
+        self.assertNotIn("-v value=", body)
+
+    def test_clear_uses_official_clear_conf_semantics(self) -> None:
+        script = read_install_script()
+        body = alpine_service_body(
+            script, "dns_api_clear_credential() {", "\ndns_api_plugin_vars() {"
+        )
+
+        self.assertIn('"^" key " *=" {next}', body)
+        # 用 cat 回写保留原 inode 与权限，不能用 mv/sed -i。
+        self.assertIn('cat "${tmp}" > "${conf}"', body)
+
+    def test_show_reports_required_vars_and_marks_unused_ones(self) -> None:
+        script = read_install_script()
+        body = alpine_service_body(
+            script, "dns_api_show_credentials() {", "\ndns_api_update_credentials() {"
+        )
+
+        # 签发实际使用的变量组必须逐个报状态，否则漏配看不出来。
+        self.assertIn('acme_dnsapi_required_vars "${plugin}"', body)
+        # 已弃用变量组（如 dns_cf 的 CF_Key）只在已设置时才列出，不能报成缺失。
+        self.assertIn("当前签发不使用", body)
+
+    def test_credential_values_are_never_echoed_in_plaintext(self) -> None:
+        script = read_install_script()
+        state = alpine_service_body(
+            script, "dns_api_credential_state() {", "\nchoose_dns_api_provider() {"
+        )
+
+        # 只输出长度，不输出明文：避免令牌进入终端回滚缓冲与操作日志。
+        self.assertIn("${#value}", state)
+
+        # 真正的不变量：值不得被交给任何打印命令。
+        bodies = [state]
+        for func, next_func in (
+            ("dns_api_show_credentials() {", "\ndns_api_update_credentials() {"),
+            ("dns_api_delete_credential() {", "\nmanage_dns_api_credentials() {"),
+        ):
+            body = alpine_service_body(script, func, next_func)
+            self.assertIn("dns_api_credential_state", body)
+            bodies.append(body)
+
+        for body in bodies:
+            for line in body.splitlines():
+                stripped = line.strip()
+                if not stripped.startswith(("printf ", "echo ")):
+                    continue
+                with self.subTest(line=stripped):
+                    self.assertNotIn("${value}", stripped)
+                    self.assertNotIn("${current}", stripped)
+
+
+@unittest.skipUnless(
+    shutil.which("bash") and INSTALL_SH.startswith("/"),
+    "函数级实跑验证需要 POSIX 环境（WSL / Linux）",
+)
+class DnsApiCredentialStorageTests(unittest.TestCase):
+    """account.conf 读写实跑：写入格式必须与 acme.sh 互相可读。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.home = self._tmp.name
+        os.makedirs(os.path.join(self.home, ".acme.sh"), exist_ok=True)
+        self.conf = os.path.join(self.home, ".acme.sh", "account.conf")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _install_fake_dns_cf(self) -> None:
+        """按真实 dns_cf 插件的字节结构造最小解件：变量行是“ 变量名 说明”。"""
+        dnsapi = os.path.join(self.home, ".acme.sh", "dnsapi")
+        os.makedirs(dnsapi, exist_ok=True)
+        write_text(
+            os.path.join(dnsapi, "dns_cf.sh"),
+            "dns_cf_info='CloudFlare\n"
+            "Options:\n"
+            " CF_Key API Key\n"
+            " CF_Email Your account email\n"
+            "OptionsAlt:\n"
+            " CF_Token API Token\n"
+            " CF_Account_ID Account ID\n"
+            " CF_Zone_ID Zone ID. Optional.\n"
+            "'\n",
+        )
+
+    def test_show_lists_each_required_var_once(self) -> None:
+        # required（OptionsAlt）与 all（两组并集）有交集，
+        # 去重一旦失效，同一变量会既报正常又报一遍“当前签发不使用”。
+        self._install_fake_dns_cf()
+        write_text(self.conf, "SAVED_CF_Token='t'\nSAVED_CF_Account_ID='a'\n")
+
+        result = run_install_functions(self.home, "dns_api_show_credentials")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("CF_Token："), 1)
+        self.assertEqual(result.stdout.count("CF_Account_ID："), 1)
+        # 未设置的可选变量组不该被报成缺失。
+        self.assertNotIn("CF_Key", result.stdout)
+
+    def test_set_then_replace_keeps_single_line_and_other_keys(self) -> None:
+        write_text(self.conf, "UPGRADE_HASH='abc'\nSAVED_CF_Token='old'\n")
+
+        result = run_install_functions(self.home, "dns_api_set_credential CF_Token 'new-token'")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        content = read_text(self.conf)
+        self.assertEqual(content.count("SAVED_CF_Token="), 1)
+        self.assertIn("SAVED_CF_Token='new-token'", content)
+        self.assertIn("UPGRADE_HASH='abc'", content)
+        self.assertNotIn("'old'", content)
+
+    def test_set_appends_when_last_line_has_no_trailing_newline(self) -> None:
+        # 末行无换行符时直接追加会把新键粘到末行尾部，必须验证不会发生。
+        write_text(self.conf, "SAVED_CF_Token='old'")
+
+        result = run_install_functions(self.home, "dns_api_set_credential CF_Token 'new-token'")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        content = read_text(self.conf)
+        for line in content.splitlines():
+            self.assertEqual(line.count("="), 1, f"行被拼接破坏了：{line!r}")
+        self.assertIn("SAVED_CF_Token='new-token'", content)
+
+    def test_set_removes_legacy_unprefixed_key(self) -> None:
+        write_text(self.conf, "CF_Token='legacy'\n")
+
+        result = run_install_functions(self.home, "dns_api_set_credential CF_Token 'new-token'")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        content = read_text(self.conf)
+        self.assertNotIn("\nCF_Token=", "\n" + content)
+        self.assertIn("SAVED_CF_Token='new-token'", content)
+
+    def test_clear_removes_only_target_key(self) -> None:
+        write_text(self.conf, "SAVED_CF_Token='t'\nSAVED_CF_Account_ID='a'\n")
+
+        result = run_install_functions(self.home, "dns_api_clear_credential CF_Token")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        content = read_text(self.conf)
+        self.assertNotIn("SAVED_CF_Token", content)
+        self.assertIn("SAVED_CF_Account_ID='a'", content)
+
+    def test_value_with_single_quote_is_rejected_without_touching_file(self) -> None:
+        write_text(self.conf, "SAVED_CF_Token='old'\n")
+
+        result = run_install_functions(self.home, "dns_api_set_credential CF_Token \"a'b\"")
+        self.assertNotEqual(result.returncode, 0)
+
+        # acme.sh 用单引号包裹取值，含单引号的值会破坏配置，必须拒绝且不落盘。
+        self.assertIn("SAVED_CF_Token='old'", read_text(self.conf))
+
+    def test_written_value_is_readable_back_by_acme_saved_credential(self) -> None:
+        result = run_install_functions(
+            self.home,
+            "dns_api_set_credential CF_Token 'tok-123456'\n"
+            "acme_saved_credential CF_Token\n"
+            "dns_api_credential_state CF_Token",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("tok-123456", result.stdout)
+        self.assertIn("已设置（长度 10）", result.stdout)
 
 
 if __name__ == "__main__":

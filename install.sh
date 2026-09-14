@@ -1717,9 +1717,16 @@ acme_dnsapi_required_vars() {
   fi
 }
 
+# acme.sh 的账户配置文件路径。读写必须共用这一处，避免两边路径漂移。
+dns_api_conf_path() {
+  printf '%s\n' "${HOME}/.acme.sh/account.conf"
+}
+
 acme_saved_credential() {
   local key="$1"
-  local conf="${HOME}/.acme.sh/account.conf"
+  local conf
+
+  conf="$(dns_api_conf_path)"
 
   [ -f "${conf}" ] || return 0
   grep -E "^SAVED_${key}=" "${conf}" 2>/dev/null | tail -n 1 \
@@ -1768,7 +1775,96 @@ dns_api_saved_provider() {
   return 1
 }
 
-select_dns_api_provider() {
+# --- DNS API 凭据读写（复刻 acme.sh 的 _setopt / _clear_conf 语义）---
+
+# 写入单个凭据变量，格式与 acme.sh 的 _saveaccountconf_mutable 一致：
+# SAVED_<变量>='<值>'，替换全部同名行、不存在则追加，并清掉无前缀的历史键。
+# awk 逐行输出会把缺失的末行换行补齐，因此不会出现新键粘在末行尾部的问题。
+dns_api_set_credential() {
+  local var="$1"
+  local value="$2"
+  local conf
+  local tmp
+
+  case "${value}" in
+    *"'"*)
+      die "凭据值不能包含单引号（acme.sh 用单引号包裹取值，写入后会破坏配置）"
+      ;;
+  esac
+
+  conf="$(dns_api_conf_path)"
+  mkdir -p "$(dirname "${conf}")"
+  [ -f "${conf}" ] || : > "${conf}"
+  tmp="$(mktemp)"
+
+  NV_CRED_VALUE="${value}" awk -v key="SAVED_${var}" -v bare="${var}" -v q="'" '
+    $0 ~ "^" key " *=" {next}
+    $0 ~ "^#" key " *=" {next}
+    $0 ~ "^" bare " *=" {next}
+    {print}
+    END {printf "%s=%s%s%s\n", key, q, ENVIRON["NV_CRED_VALUE"], q}
+  ' "${conf}" > "${tmp}"
+
+  # 用 cat 回写而非 mv，保留原文件的 inode、权限与属主。
+  cat "${tmp}" > "${conf}"
+  rm -f "${tmp}"
+}
+
+# 删除单个凭据变量，等价于 acme.sh 的 _clear_conf。
+dns_api_clear_credential() {
+  local var="$1"
+  local conf
+  local tmp
+
+  conf="$(dns_api_conf_path)"
+  [ -f "${conf}" ] || return 0
+  tmp="$(mktemp)"
+
+  awk -v key="SAVED_${var}" '
+    $0 ~ "^" key " *=" {next}
+    {print}
+  ' "${conf}" > "${tmp}"
+
+  cat "${tmp}" > "${conf}"
+  rm -f "${tmp}"
+}
+
+# 插件声明过的全部变量（Options 与 OptionsAlt 的并集，按出现顺序去重）。
+dns_api_plugin_vars() {
+  local plugin="$1"
+
+  {
+    acme_dnsapi_var_block "${plugin}" 'Options:'
+    acme_dnsapi_var_block "${plugin}" 'OptionsAlt:'
+  } | awk '!seen[$0]++'
+}
+
+dns_api_any_var_saved() {
+  local var
+
+  for var in "$@"; do
+    if [ -n "$(acme_saved_credential "${var}")" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# 只回显长度不回显明文，避免令牌进入终端回滚缓冲与操作日志。
+dns_api_credential_state() {
+  local var="$1"
+  local value
+
+  value="$(acme_saved_credential "${var}")"
+  if [ -n "${value}" ]; then
+    printf '已设置（长度 %d）\n' "${#value}"
+  else
+    printf '未设置\n'
+  fi
+}
+
+# 强制重新选择提供商，不复用已保存凭据，供凭据管理使用。
+choose_dns_api_provider() {
   local rows=()
   local row
   local plugin
@@ -1776,13 +1872,6 @@ select_dns_api_provider() {
   local index
 
   mapfile -t rows < <(acme_dnsapi_providers)
-
-  plugin="$(dns_api_saved_provider || true)"
-  if [ -n "${plugin}" ]; then
-    green "复用已保存的 ${plugin} 凭据" >&2
-    printf '%s\n' "${plugin}"
-    return 0
-  fi
 
   echo "可用 DNS 提供商（凭据只需该域名的 DNS 编辑权限）：" >&2
   index=1
@@ -1811,6 +1900,19 @@ select_dns_api_provider() {
   ensure_acme_dnsapi "${plugin}"
   [ -n "$(acme_dnsapi_required_vars "${plugin}")" ] || die "无法从 ${plugin} 插件解析出所需变量，请确认插件名是否正确"
   printf '%s\n' "${plugin}"
+}
+
+select_dns_api_provider() {
+  local plugin
+
+  plugin="$(dns_api_saved_provider || true)"
+  if [ -n "${plugin}" ]; then
+    green "复用已保存的 ${plugin} 凭据" >&2
+    printf '%s\n' "${plugin}"
+    return 0
+  fi
+
+  choose_dns_api_provider
 }
 
 prompt_dns_api_credentials() {
@@ -7539,12 +7641,16 @@ show_help() {
   nv update hy2   更新 Hysteria2 core
   nv update geo   更新 geoip.dat / geosite.dat
   nv deps         检查并安装脚本依赖和核心组件
+  nv dns          管理 DNS API 凭据（查看 / 新增更新 / 删除）
   nv uninstall    卸载 nat-v2ray
 
 说明：
   每个 Xray 节点会保存为独立 profile，并自动重建总配置以便多节点同时运行。
   2) 更改配置原地编辑现有节点，回车保留原值；TLS 域名不变不重新申请证书，失败自动回滚。
-  TLS 类协议使用 DNS-01 手动 TXT 验证，不依赖 80/443 入站端口。
+  TLS 类协议支持 DNS-01 验证，不依赖 80/443 入站端口。
+  推荐在申请证书时选 DNS API 自动验证，并填好服务商凭据，之后续期全自动；
+  也可选手动 TXT 验证，但每次续期都需人工添加记录。
+  凭据可用 nv dns（面板 9) 其他 → 6) DNS API 凭据管理）随时查看、更新或删除。
   安装时会分别询问本机监听端口和外网连接端口。
   服务端配置监听本机端口，分享链接使用外网连接端口。
   NAT 面板必须按协议类型把外网 TCP、UDP 或端口范围转发到本机。
@@ -7589,6 +7695,197 @@ setup_keepalive() {
   pause_return
 }
 
+# --- DNS API 凭据管理界面 ---
+
+dns_api_show_credentials() {
+  local conf
+  local row
+  local plugin
+  local label
+  local var
+  local vars
+  local required
+  local key
+  local state
+  local known=" "
+  local printed=0
+  local others=()
+
+  conf="$(dns_api_conf_path)"
+  if [ ! -f "${conf}" ] || ! grep -q '^SAVED_' "${conf}" 2>/dev/null; then
+    yellow "尚未保存任何 DNS API 凭据"
+    return 0
+  fi
+
+  while IFS= read -r row; do
+    plugin="${row%%|*}"
+    label="${row##*|}"
+    # 只为已下载插件的提供商归类，避免查看动作触发插件下载。
+    [ -s "$(acme_dnsapi_path "${plugin}")" ] || continue
+    vars="$(dns_api_plugin_vars "${plugin}")"
+    [ -n "${vars}" ] || continue
+    if ! dns_api_any_var_saved ${vars}; then
+      continue
+    fi
+    # 转成空格分隔，否则后面的去重模式（用空格定界）匹配不上换行。
+    required="$(acme_dnsapi_required_vars "${plugin}" | tr '\n' ' ')"
+    printf '%s（%s）：\n' "${label}" "${plugin}"
+    for var in ${vars}; do
+      known="${known}${var} "
+    done
+    for var in ${required}; do
+      state="$(dns_api_credential_state "${var}")"
+      printf '  %s：%s\n' "${var}" "${state}"
+    done
+    # 声明了但签发不用的变量（如 dns_cf 已弃用的 CF_Key）只在已设置时列出，
+    # 避免把“用不到”显示成“缺失”。
+    for var in ${vars}; do
+      case " ${required} " in
+        *" ${var} "*) continue ;;
+      esac
+      if [ -n "$(acme_saved_credential "${var}")" ]; then
+        state="$(dns_api_credential_state "${var}")"
+        printf '  %s：%s（当前签发不使用）\n' "${var}" "${state}"
+      fi
+    done
+    printed=1
+  done < <(acme_dnsapi_providers)
+
+  # 自定义插件名保存的变量不在提供商表里，单独兜底列出，避免看不见也删不掉。
+  while IFS= read -r key; do
+    key="${key#SAVED_}"
+    key="${key%%=*}"
+    case "${known}" in
+      *" ${key} "*) continue ;;
+    esac
+    others+=("${key}")
+  done < <(grep '^SAVED_' "${conf}" 2>/dev/null || true)
+
+  if [ "${#others[@]}" -gt 0 ]; then
+    printf '其他已保存变量：\n'
+    for key in "${others[@]}"; do
+      state="$(dns_api_credential_state "${key}")"
+      printf '  %s：%s\n' "${key}" "${state}"
+    done
+    printed=1
+  fi
+
+  if [ "${printed}" -eq 0 ]; then
+    yellow "尚未保存任何 DNS API 凭据"
+  fi
+}
+
+dns_api_update_credentials() {
+  local plugin
+  local vars
+  local var
+  local current
+  local value
+
+  plugin="$(choose_dns_api_provider)"
+  [ -n "${plugin}" ] || return 1
+  vars="$(acme_dnsapi_required_vars "${plugin}")"
+  [ -n "${vars}" ] || die "无法从 ${plugin} 插件解析出所需变量"
+
+  for var in ${vars}; do
+    current="$(acme_saved_credential "${var}")"
+    if [ -n "${current}" ]; then
+      printf '%s 当前已设置（长度 %d），留空保持不变\n' "${var}" "${#current}"
+    fi
+    value="$(prompt_value "请输入 ${var}" '')"
+    if [ -z "${value}" ]; then
+      if [ -z "${current}" ]; then
+        yellow "跳过未填写的 ${var}"
+      fi
+      continue
+    fi
+    dns_api_set_credential "${var}" "${value}"
+    green "已保存 ${var}"
+  done
+
+  # 复用既有的完整性判定，凭据不齐时明确提示，避免续期静默失败。
+  if dns_api_credentials_ready "${plugin}"; then
+    green "${plugin} 凭据已齐全，证书可自动续期"
+  else
+    yellow "${plugin} 凭据仍不完整，自动续期可能失败"
+  fi
+}
+
+dns_api_delete_credential() {
+  local conf
+  local keys=()
+  local key
+  local choice
+  local index
+
+  conf="$(dns_api_conf_path)"
+  if [ -f "${conf}" ]; then
+    while IFS= read -r key; do
+      key="${key#SAVED_}"
+      keys+=("${key%%=*}")
+    done < <(grep '^SAVED_' "${conf}" 2>/dev/null || true)
+  fi
+
+  if [ "${#keys[@]}" -eq 0 ]; then
+    yellow "尚未保存任何 DNS API 凭据"
+    return 0
+  fi
+
+  echo "已保存的凭据变量："
+  index=1
+  for key in "${keys[@]}"; do
+    printf '  %d) %s（%s）\n' "${index}" "${key}" "$(dns_api_credential_state "${key}")"
+    index=$((index + 1))
+  done
+  printf '  0) 取消\n'
+
+  read_input choice '请选择要删除的凭据 [0]: '
+  choice="${choice:-0}"
+  if [ "${choice}" = "0" ]; then
+    return 0
+  fi
+  if [ "${choice}" -ge 1 ] 2>/dev/null && [ "${choice}" -le "${#keys[@]}" ]; then
+    key="${keys[$((choice - 1))]}"
+  else
+    yellow "无效选项"
+    return 0
+  fi
+
+  if ! prompt_yes_no "确认删除 ${key}" 'n'; then
+    yellow "已取消"
+    return 0
+  fi
+
+  backup_file "${conf}"
+  dns_api_clear_credential "${key}"
+  green "已删除 ${key}"
+}
+
+manage_dns_api_credentials() {
+  local choice
+
+  while true; do
+    cat <<'EOF'
+
+DNS API 凭据管理：
+  凭据保存在 acme.sh 的 account.conf，安装 TLS 节点时自动复用，续期无需人工干预。
+  1) 查看已保存的凭据
+  2) 新增或更新凭据
+  3) 删除凭据
+  0) 返回
+EOF
+    read_input choice '请选择 [0-3]: '
+    choice="${choice:-0}"
+    case "${choice}" in
+      1) dns_api_show_credentials; pause_return ;;
+      2) dns_api_update_credentials; pause_return ;;
+      3) dns_api_delete_credential; pause_return ;;
+      0) return 0 ;;
+      *) yellow "无效选项" ;;
+    esac
+  done
+}
+
 other_tools() {
   local choice
 
@@ -7601,9 +7898,10 @@ other_tools() {
   3) 安装/修复 nv 命令
   4) 测试 Xray 配置
   5) 保活配置
+  6) DNS API 凭据管理
   0) 返回
 EOF
-    read_input choice '请选择 [0-5]: '
+    read_input choice '请选择 [0-6]: '
     choice="${choice:-0}"
     case "${choice}" in
       1) txt_check_tool; pause_return ;;
@@ -7611,6 +7909,7 @@ EOF
       3) install_nv_command && green "nv 已安装：${NV_BIN}"; pause_return ;;
       4) xray_test_run; pause_return ;;
       5) setup_keepalive ;;
+      6) manage_dns_api_credentials ;;
       0) return 0 ;;
       *) yellow "无效选项" ;;
     esac
@@ -8005,6 +8304,9 @@ main() {
       ;;
     deps|dependency|dependencies)
       dependency_menu
+      ;;
+    dns|dnsapi|dns-api)
+      manage_dns_api_credentials
       ;;
     uninstall)
       uninstall_nat_v2ray
